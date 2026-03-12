@@ -49,8 +49,8 @@ import timm
 warnings.filterwarnings('ignore')
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_DIR      = (Path('/kaggle/input/birdclef-2026')
-                 if Path('/kaggle/input/birdclef-2026').exists()
+BASE_DIR      = (Path('/kaggle/input/competitions/birdclef-2026')
+                 if Path('/kaggle/input/competitions/birdclef-2026').exists()
                  else Path('birdclef-2026'))
 BIRDNET_DIR   = Path('/kaggle/input/birdnet-analyzer-model')
 OUTPUT_DIR    = Path('/kaggle/working') if Path('/kaggle/working').exists() else Path('outputs')

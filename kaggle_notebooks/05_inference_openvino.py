@@ -19,7 +19,7 @@
 
 # %%
 # ── Version pins ──────────────────────────────────────────────────────────────
-# !pip install -q openvino==2024.0.0 onnx==1.16.0 onnxruntime==1.18.0  # uncomment on Kaggle
+# !pip install -q openvino==2024.0.0 onnx==1.16.0 onnxruntime==1.18.0 onnxscript  # uncomment on Kaggle
 
 import os, time, json, warnings
 import numpy as np
@@ -190,6 +190,7 @@ def export_to_onnx(model: nn.Module, output_path: Path, cfg: dict) -> Path:
             'output': {0: 'batch_size'},
         },
         verbose=False,
+        dynamo=False,   # force legacy exporter (PyTorch 2.x defaults changed)
     )
 
     # Verify the exported file

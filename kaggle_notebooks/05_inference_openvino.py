@@ -390,48 +390,51 @@ for ms in ms_values:
     else:
         colours.append('#e74c3c')   # red
 
-fig, ax = plt.subplots(figsize=(9, 4))
+if not ms_values:
+    print("No benchmark results to plot — all backends unavailable.")
+else:
+    x_max = max(ms_values)
+    fig, ax = plt.subplots(figsize=(9, 4))
 
-bars = ax.barh(backend_names, ms_values, color=colours, edgecolor='#2c3e50', linewidth=0.8)
+    bars = ax.barh(backend_names, ms_values, color=colours, edgecolor='#2c3e50', linewidth=0.8)
 
-# Value labels on bars
-for bar, ms in zip(bars, ms_values):
+    # Value labels on bars
+    for bar, ms in zip(bars, ms_values):
+        ax.text(
+            ms + x_max * 0.01,
+            bar.get_y() + bar.get_height() / 2,
+            f'{ms:.0f} ms',
+            va='center', fontsize=11, fontweight='bold'
+        )
+
+    # Time-out threshold line
+    ax.axvline(LIMIT_MS, color='#e74c3c', linewidth=2, linestyle='--')
     ax.text(
-        ms + max(ms_values) * 0.01,
-        bar.get_y() + bar.get_height() / 2,
-        f'{ms:.0f} ms',
-        va='center', fontsize=11, fontweight='bold'
+        LIMIT_MS + x_max * 0.01,
+        len(ms_values) - 0.5,
+        f'Budget limit\n({LIMIT_MS:.0f} ms)',
+        color='#e74c3c', fontsize=9, va='top'
     )
 
-# Time-out threshold line
-ax.axvline(LIMIT_MS, color='#e74c3c', linewidth=2, linestyle='--')
-ax.text(
-    LIMIT_MS + max(ms_values) * 0.01,
-    len(ms_values) - 0.5,
-    f'Budget limit\n({LIMIT_MS:.0f} ms)',
-    color='#e74c3c', fontsize=9, va='top'
-)
+    legend_patches = [
+        mpatches.Patch(color='#2ecc71', label='Well within budget'),
+        mpatches.Patch(color='#f39c12', label='Close to budget'),
+        mpatches.Patch(color='#e74c3c', label='Exceeds budget'),
+    ]
+    ax.legend(handles=legend_patches, loc='lower right', fontsize=9)
 
-# Legend patches
-legend_patches = [
-    mpatches.Patch(color='#2ecc71', label='Well within budget'),
-    mpatches.Patch(color='#f39c12', label='Close to budget'),
-    mpatches.Patch(color='#e74c3c', label='Exceeds budget'),
-]
-ax.legend(handles=legend_patches, loc='lower right', fontsize=9)
-
-ax.set_xlabel('Milliseconds per 5-second chunk', fontsize=12)
-ax.set_title(
-    f'Inference speed comparison\n'
-    f'(est. {EST_N_CHUNKS:,} chunks, {TOTAL_BUDGET_S//60}-min budget → {LIMIT_MS:.0f} ms/chunk limit)',
-    fontsize=13
-)
-ax.set_xlim(0, max(ms_values) * 1.25)
-ax.invert_yaxis()   # fastest at top
-ax.grid(axis='x', alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUTPUT_DIR / 'benchmark_comparison.png', dpi=150, bbox_inches='tight')
-plt.show()
+    ax.set_xlabel('Milliseconds per 5-second chunk', fontsize=12)
+    ax.set_title(
+        f'Inference speed comparison\n'
+        f'(est. {EST_N_CHUNKS:,} chunks, {TOTAL_BUDGET_S//60}-min budget → {LIMIT_MS:.0f} ms/chunk limit)',
+        fontsize=13
+    )
+    ax.set_xlim(0, x_max * 1.25)
+    ax.invert_yaxis()   # fastest at top
+    ax.grid(axis='x', alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / 'benchmark_comparison.png', dpi=150, bbox_inches='tight')
+    plt.show()
 print("Figure saved.")
 
 # ── Speedup summary ────────────────────────────────────────────────────────────
@@ -547,14 +550,20 @@ def run_inference(
 if predict_ov is not None:
     inference_fn = predict_ov
     backend_name = 'OpenVINO FP16'
-else:
+elif predict_onnx is not None:
     inference_fn = predict_onnx
     backend_name = 'ONNX Runtime'
+else:
+    inference_fn = predict_pytorch
+    backend_name = 'PyTorch CPU'
+    print("Neither OpenVINO nor ONNX Runtime available — falling back to PyTorch CPU.")
 
 print(f"Active inference backend: {backend_name}")
 
 # ── Runtime estimate ──────────────────────────────────────────────────────────
-active_ms  = benchmark_results.get('OpenVINO FP16') or benchmark_results['ONNX Runtime']
+active_ms = (benchmark_results.get('OpenVINO FP16')
+             or benchmark_results.get('ONNX Runtime')
+             or benchmark_results.get('PyTorch CPU'))
 EST_N_SC   = 500
 EST_DUR    = 120    # seconds per soundscape on average
 est_chunks = EST_N_SC * EST_DUR // CFG['DURATION']

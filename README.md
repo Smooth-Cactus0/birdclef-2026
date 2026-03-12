@@ -78,9 +78,21 @@ Key novelties vs. prior BirdCLEF editions:
 
 ### Augmentation pipeline
 
-![Full augmentation pipeline](docs/figures/aug_07_full_pipeline.png)
+**Original spectrograms (one per taxa):**
 
-*Four random augmentation seeds applied to the same original clip. The stochastic pipeline (background mix → time shift → pitch shift → SpecAugment) produces diverse training examples from a single recording.*
+![Original spectrograms](docs/figures/aug_00_originals.png)
+
+**MixUp** — blends two species clips; labels are mixed proportionally (λ·label_A + (1-λ)·label_B):
+
+![MixUp](docs/figures/aug_04_mixup.png)
+
+**Background mix** — the highest-ROI augmentation: training clips mixed with real Pantanal soundscape noise, directly closing the domain gap:
+
+![Background mix](docs/figures/aug_05_background_mix.png)
+
+**Full stochastic pipeline** — four random seeds on the same clip:
+
+![Full augmentation pipeline](docs/figures/aug_07_full_pipeline.png)
 
 ![Augmentation summary](docs/figures/aug_08_summary_table.png)
 
@@ -88,15 +100,19 @@ Key novelties vs. prior BirdCLEF editions:
 
 ## Inference Benchmarks
 
-Tested locally on CPU (EfficientNet-B0, input shape `1×128×501`):
+Measured on **Kaggle CPU** (EfficientNet-B0, input shape `1×128×501`, n=50 runs):
 
-| Backend | ms / 5s chunk | Speedup | 12,000 chunks |
-|---|---|---|---|
-| PyTorch CPU | 42 ms | 1× | ~8.4 min |
-| ONNX Runtime | 18 ms | 2.4× | ~3.5 min |
-| OpenVINO FP16 | ~5 ms* | ~8-12×* | ~1 min* |
+| Backend | ms / 5s chunk | Speedup | 12,000 chunks | Status |
+|---|---|---|---|---|
+| PyTorch CPU | 41.9 ms | 1× | ~8.4 min | ✅ measured |
+| ONNX Runtime | ~17 ms* | ~2.4×* | ~3.5 min* | ⏳ pending |
+| OpenVINO FP16 | ~5 ms** | ~8-12×** | ~1 min** | ⏳ pending |
 
-*OpenVINO estimate based on prior BirdCLEF editions; not yet measured locally.*
+*Local CPU measurement. **Estimate from prior BirdCLEF editions (2024–2025 winners). Full ONNX/OpenVINO numbers will be added once pip install cell is enabled.*
+
+![Benchmark comparison](docs/figures/benchmark_comparison.png)
+
+*PyTorch CPU baseline (42 ms/chunk) is well within the 450 ms/chunk budget. ONNX Runtime and OpenVINO FP16 will push this even further down, leaving headroom for a 5-model ensemble.*
 
 The competition runs inference on Kaggle CPU with a ~90-120 min total budget. All models are exported to ONNX and converted to OpenVINO FP16 before the final submission.
 

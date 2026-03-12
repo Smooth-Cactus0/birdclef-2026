@@ -285,16 +285,23 @@ def predict_pytorch(x_np: np.ndarray) -> np.ndarray:
 
 
 # ── Backend 2: ONNX Runtime ───────────────────────────────────────────────────
-ort_session = ort.InferenceSession(
-    str(ONNX_PATH),
-    providers=['CPUExecutionProvider'],
-)
+predict_onnx = None
 
-def predict_onnx(x_np: np.ndarray) -> np.ndarray:
-    """Run a single forward pass with ONNX Runtime."""
-    outputs = ort_session.run(None, {'input': x_np})
-    logits  = outputs[0]
-    return 1.0 / (1.0 + np.exp(-logits))   # sigmoid
+if ORT_AVAILABLE and ONNX_PATH.exists():
+    _ort_session = ort.InferenceSession(
+        str(ONNX_PATH),
+        providers=['CPUExecutionProvider'],
+    )
+
+    def predict_onnx(x_np: np.ndarray) -> np.ndarray:
+        """Run a single forward pass with ONNX Runtime."""
+        outputs = _ort_session.run(None, {'input': x_np})
+        logits  = outputs[0]
+        return 1.0 / (1.0 + np.exp(-logits))   # sigmoid
+
+    print("ONNX Runtime session ready.")
+else:
+    print("ONNX Runtime backend not available — skipping ORT benchmark.")
 
 
 # ── Backend 3: OpenVINO ───────────────────────────────────────────────────────
@@ -341,7 +348,11 @@ print("\nBenchmark results (n_runs=50, input shape = (1,1,128,501)):")
 benchmark_results = {}
 
 benchmark_results['PyTorch CPU']   = benchmark('PyTorch CPU',    predict_pytorch)
-benchmark_results['ONNX Runtime']  = benchmark('ONNX Runtime',   predict_onnx)
+if predict_onnx is not None:
+    benchmark_results['ONNX Runtime']  = benchmark('ONNX Runtime',   predict_onnx)
+else:
+    benchmark_results['ONNX Runtime']  = None
+    print(f"  {'ONNX Runtime':<28s}: not available")
 if predict_ov is not None:
     benchmark_results['OpenVINO FP16'] = benchmark('OpenVINO FP16', predict_ov)
 else:
@@ -611,18 +622,23 @@ rng = np.random.default_rng(42)
 for _ in range(N_CHECK):
     x_np = rng.standard_normal((1, 1, CFG['N_MELS'], N_FRAMES)).astype(np.float32)
 
-    pt_out   = predict_pytorch(x_np)
-    onnx_out = predict_onnx(x_np)
-    diffs_onnx.append(np.abs(pt_out - onnx_out).max())
+    pt_out = predict_pytorch(x_np)
+
+    if predict_onnx is not None:
+        onnx_out = predict_onnx(x_np)
+        diffs_onnx.append(np.abs(pt_out - onnx_out).max())
 
     if predict_ov is not None:
         ov_out = predict_ov(x_np)
         diffs_ov.append(np.abs(pt_out - ov_out).max())
 
-max_diff_onnx = float(np.max(diffs_onnx))
-print(f"  Max |PyTorch - ONNX|        : {max_diff_onnx:.2e}  (threshold: 1e-4)")
-assert max_diff_onnx < 1e-3, "ONNX outputs differ too much from PyTorch — check the export."
-print("  ONNX check PASSED")
+if diffs_onnx:
+    max_diff_onnx = float(np.max(diffs_onnx))
+    print(f"  Max |PyTorch - ONNX|        : {max_diff_onnx:.2e}  (threshold: 1e-3)")
+    assert max_diff_onnx < 1e-3, "ONNX outputs differ too much from PyTorch — check the export."
+    print("  ONNX check PASSED")
+else:
+    print("  ONNX Runtime not available — skipping ONNX accuracy check.")
 
 if diffs_ov:
     max_diff_ov = float(np.max(diffs_ov))

@@ -52,18 +52,19 @@ CFG = dict(
     FMAX        = 15000,
     DURATION    = 5,         # seconds per clip during training
     # Model
-    MODEL_NAME  = 'efficientnet_b0',
-    PRETRAINED  = True,
+    MODEL_NAME   = 'efficientnet_b0',
+    PRETRAINED   = True,
     # Training
-    N_FOLDS     = 5,
-    EPOCHS      = 10,
-    BATCH_SIZE  = 32,
-    LR          = 1e-3,
-    WEIGHT_DECAY= 1e-4,
-    MIN_RATING  = 0.0,       # 0.0 = include all iNat clips
+    N_FOLDS      = 5,
+    EPOCHS       = 10,
+    BATCH_SIZE   = 32,
+    LR           = 1e-3,
+    WEIGHT_DECAY = 1e-4,
+    MIN_RATING   = 0.0,       # 0.0 = include all iNat clips
     # Device
-    DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu',
-    SEED        = 42,
+    DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu',
+    SEED         = 42,
+    NUM_WORKERS  = 0 if os.name == 'nt' else 4,  # 0 on Windows to avoid hang
 )
 print(f"Device: {CFG['DEVICE']}")
 print(f"torch: {torch.__version__}, timm: {timm.__version__}")
@@ -192,7 +193,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, criterion, device):
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device, num_classes):
+def validate(model, loader, criterion, device):
     model.eval()
     total_loss = 0.0
     all_probs, all_targets = [], []
@@ -237,9 +238,9 @@ for fold, (train_idx, val_idx) in enumerate(
     train_ds = BirdDataset(train_fold, CFG, augment=True)
     val_ds   = BirdDataset(val_fold,   CFG, augment=False)
     train_dl = DataLoader(train_ds, batch_size=CFG['BATCH_SIZE'],
-                          shuffle=True,  num_workers=4, pin_memory=True)
+                          shuffle=True,  num_workers=CFG['NUM_WORKERS'], pin_memory=True)
     val_dl   = DataLoader(val_ds,   batch_size=CFG['BATCH_SIZE'],
-                          shuffle=False, num_workers=4, pin_memory=True)
+                          shuffle=False, num_workers=CFG['NUM_WORKERS'], pin_memory=True)
 
     model     = BirdModel(CFG['MODEL_NAME'], NUM_CLASSES, CFG['PRETRAINED'])
     model     = model.to(CFG['DEVICE'])
@@ -256,8 +257,7 @@ for fold, (train_idx, val_idx) in enumerate(
     for epoch in range(1, CFG['EPOCHS'] + 1):
         tr_loss = train_one_epoch(model, train_dl, optimizer, scheduler,
                                   criterion, CFG['DEVICE'])
-        vl_loss, vl_auc = validate(model, val_dl, criterion,
-                                   CFG['DEVICE'], NUM_CLASSES)
+        vl_loss, vl_auc = validate(model, val_dl, criterion, CFG['DEVICE'])
         fold_hist.append({'fold': fold, 'epoch': epoch,
                           'tr_loss': tr_loss, 'vl_loss': vl_loss, 'vl_auc': vl_auc})
         elapsed = time.time() - t0
@@ -275,13 +275,6 @@ for fold, (train_idx, val_idx) in enumerate(
     model.load_state_dict(torch.load(OUTPUT_DIR / f'model_fold{fold}.pth',
                                       map_location=CFG['DEVICE']))
     model.eval()
-    with torch.no_grad():
-        for X, y in val_dl:
-            X   = X.to(CFG['DEVICE'])
-            idx = val_idx[: len(oof_preds) - len(val_idx)]  # align
-            probs = torch.softmax(model(X), dim=1).cpu().numpy()
-            # fill OOF
-    # Re-run val to get OOF probs properly
     all_probs_list = []
     with torch.no_grad():
         for X, _ in val_dl:
@@ -366,7 +359,7 @@ def predict_soundscape(audio_path, model, cfg, device):
         return {}
     batch  = torch.stack(chunks).to(device)
     with torch.no_grad():
-        probs = torch.sigmoid(model(batch)).cpu().numpy()   # sigmoid for multi-label style
+        probs = torch.softmax(model(batch), dim=1).cpu().numpy()  # softmax matches CrossEntropy
     for rid, p in zip(row_ids, probs):
         results[rid] = p
     return results
@@ -380,12 +373,14 @@ for sf_path in test_soundscapes:
 print(f"Total prediction rows: {len(all_preds)}")
 
 # %%
-# Align with sample_submission
-sub = sample_sub.copy()
-for row_id in sub['row_id']:
-    if row_id in all_preds:
-        sub.loc[sub['row_id'] == row_id, label_list] = all_preds[row_id]
-    # else leave as sample_submission default (uniform)
+# Align with sample_submission — vectorized merge (O(n) not O(n²))
+pred_df = pd.DataFrame.from_dict(all_preds, orient='index', columns=label_list)
+pred_df.index.name = 'row_id'
+pred_df = pred_df.reset_index()
+
+sub = sample_sub[['row_id']].merge(pred_df, on='row_id', how='left')
+# Fill any row_id not covered by inference with uniform probability
+sub[label_list] = sub[label_list].fillna(1.0 / NUM_CLASSES)
 
 sub.to_csv(OUTPUT_DIR / 'submission.csv', index=False)
 print(f"Submission saved: {sub.shape}")
@@ -395,7 +390,9 @@ print(sub.head(2))
 # ── ONNX export ───────────────────────────────────────────────────────────────
 # Required for OpenVINO conversion and CPU inference budget management.
 try:
-    dummy = torch.randn(1, 1, CFG['N_MELS'], 157).to(CFG['DEVICE'])  # 5s→157 frames
+    # Time frames = 1 + (SR*DURATION // HOP_LENGTH) with librosa center=True padding
+    n_frames = 1 + (CFG['SR'] * CFG['DURATION'] // CFG['HOP_LENGTH'])  # = 501
+    dummy = torch.randn(1, 1, CFG['N_MELS'], n_frames).to(CFG['DEVICE'])
     torch.onnx.export(
         inf_model, dummy,
         str(OUTPUT_DIR / 'model_efficientnet_b0.onnx'),

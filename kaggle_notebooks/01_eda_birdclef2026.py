@@ -26,11 +26,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as ticker
-import seaborn as sns
 import librosa
 import librosa.display
-import soundfile as sf
-import os, json, ast, re
+import os, json, re
 from pathlib import Path
 from collections import Counter
 import warnings

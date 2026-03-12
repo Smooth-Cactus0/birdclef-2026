@@ -19,7 +19,7 @@
 
 # %%
 # ── Version pins ──────────────────────────────────────────────────────────────
-# !pip install -q openvino==2024.0.0 onnx==1.16.0  # uncomment on Kaggle
+# !pip install -q openvino==2024.0.0 onnx==1.16.0 onnxruntime==1.18.0  # uncomment on Kaggle
 
 import os, time, json, warnings
 import numpy as np
@@ -31,14 +31,19 @@ import torch
 import torch.nn as nn
 import timm
 import onnx
-import onnxruntime as ort
+try:
+    import onnxruntime as ort
+    ORT_AVAILABLE = True
+except ImportError:
+    ORT_AVAILABLE = False
+    print("onnxruntime not found — run: !pip install onnxruntime")
 from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
 print(f"torch       : {torch.__version__}")
 print(f"timm        : {timm.__version__}")
-print(f"onnxruntime : {ort.__version__}")
+print(f"onnxruntime : {ort.__version__ if ORT_AVAILABLE else 'NOT INSTALLED — pip install onnxruntime'}")
 try:
     import openvino as ov
     print(f"openvino    : {ov.__version__}")

@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-backbone-search-bird-pipeline",
+  "title": "BirdCLEF 2026 Backbone Search Bird Pipeline",
+  "code_file": "06_backbone_search.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "false",
+  "dataset_sources": [],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [],
+  "model_sources": []
+}

@@ -1,48 +1,48 @@
 # %%
 # =============================================================================
-# BirdCLEF 2026 — Non-Bird Pipeline (Amphibia + Insecta + Mammalia + Reptilia)
+# BirdCLEF 2026 -- Non-Bird Pipeline (Amphibia + Insecta + Mammalia + Reptilia)
 # =============================================================================
 # Classes   : 72 non-bird species
 #   - Amphibia  : 35 frog species
-#   - Insecta   : 3 named + 25 iNat-47158 sonotypes (son01–son25)
+#   - Insecta   : 3 named + 25 iNat-47158 sonotypes (son01-son25)
 #   - Mammalia  : 8 (Jaguar, Howler Monkey, Capuchin, Marmoset, Titi, Horse, Cattle, Dog)
 #   - Reptilia  : 1 (Caiman yacare)
 #
-# CRITICAL  : Insect sonotypes (47158son01–son25) have ZERO clips in train_audio
-#             → PRIMARY data = train_soundscapes_labels.csv expert-annotated segments
-#             → Soundscape labels use iNat taxon IDs (not ebird codes); mapped via taxonomy.csv
-#             → start/end columns are HH:MM:SS strings; convert to seconds for librosa offset
+# CRITICAL  : Insect sonotypes (47158son01-son25) have ZERO clips in train_audio
+#             -> PRIMARY data = train_soundscapes_labels.csv expert-annotated segments
+#             -> Soundscape labels use iNat taxon IDs (not ebird codes); mapped via taxonomy.csv
+#             -> start/end columns are HH:MM:SS strings; convert to seconds for librosa offset
 #
-# Loss      : Focal BCE (gamma=2) — down-weights easy negatives from overrepresented classes,
+# Loss      : Focal BCE (gamma=2) -- down-weights easy negatives from overrepresented classes,
 #             focuses learning on rare species (Caiman: 1 clip; some sonotypes: only in soundscapes)
-# Model     : ECA-NFNet-L0 — strong built-in regularisation (Scaled Weight Standardisation +
+# Model     : ECA-NFNet-L0 -- strong built-in regularisation (Scaled Weight Standardisation +
 #             Exponential Moving Average), good for small datasets
-# Folds     : GroupKFold by recorder site — prevents geographic leakage
-# Oversample: Gold soundscape segments repeated 3× per epoch (they're high-quality)
+# Folds     : GroupKFold by recorder site -- prevents geographic leakage
+# Oversample: Gold soundscape segments repeated 3x per epoch (they're high-quality)
 # =============================================================================
 
 # %% [markdown]
 # # Non-Bird Pipeline: Amphibia, Insecta, Mammalia, Reptilia
 #
-# The BirdCLEF 2026 competition includes **234 total species** — 162 birds and 72 non-birds.
+# The BirdCLEF 2026 competition includes **234 total species** -- 162 birds and 72 non-birds.
 # This notebook handles the non-bird pipeline separately, because:
 #
 # 1. **Data scarcity**: Only ~750 non-bird clips in `train_audio` (vs 34,799 bird clips)
 # 2. **Extreme imbalance**: Caiman yacare has 1 clip; some insect sonotypes have 0 clips
 # 3. **Different primary data source**: Expert-annotated `train_soundscapes_labels.csv` is
-#    the *only* source for insect sonotypes — these species simply don't exist in `train_audio`
+#    the *only* source for insect sonotypes -- these species simply don't exist in `train_audio`
 # 4. **Architecture choice**: ECA-NFNet-L0's aggressive regularisation prevents overfitting
 #    on the tiny non-bird dataset
 #
 # ## Data Architecture
 # ```
-# train_audio/        → 451 Amphibia + 199 Insecta + 99 Mammalia + 1 Reptilia clips
-# train_soundscapes/  → PAM recordings from real Pantanal recorders
-# train_soundscapes_labels.csv → expert-annotated 5s segments (iNat IDs, HH:MM:SS timestamps)
+# train_audio/        -> 451 Amphibia + 199 Insecta + 99 Mammalia + 1 Reptilia clips
+# train_soundscapes/  -> PAM recordings from real Pantanal recorders
+# train_soundscapes_labels.csv -> expert-annotated 5s segments (iNat IDs, HH:MM:SS timestamps)
 # ```
 
 # %%
-# ── Install / version pins ────────────────────────────────────────────────────
+# -- Install / version pins ----------------------------------------------------
 # !pip install -q timm==1.0.3  # uncomment on Kaggle if needed
 
 import os, gc, json, time, warnings
@@ -60,7 +60,7 @@ from torch.utils.data import Dataset, DataLoader
 import timm
 warnings.filterwarnings('ignore')
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# -- Paths ---------------------------------------------------------------------
 BASE_DIR   = (Path('/kaggle/input/competitions/birdclef-2026')
               if Path('/kaggle/input/competitions/birdclef-2026').exists()
               else Path('birdclef-2026'))
@@ -68,9 +68,9 @@ OUTPUT_DIR = Path('/kaggle/working') if Path('/kaggle/working').exists() else Pa
 OUTPUT_DIR.mkdir(exist_ok=True)
 NUM_WORKERS = 0 if os.name == 'nt' else 4
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 CFG = dict(
-    # Audio — identical constants across all notebooks
+    # Audio -- identical constants across all notebooks
     SR=32000, N_FFT=1024, HOP_LENGTH=320, N_MELS=128, FMIN=40, FMAX=15000,
     # Duration: soundscape segments are already 5s; no need for 10s here
     DURATION=5, TRAIN_DURATION=5,
@@ -79,11 +79,11 @@ CFG = dict(
     PRETRAINED=True,
     # Training
     N_FOLDS=5,
-    EPOCHS=25,         # more epochs — dataset is small so each epoch is fast
+    EPOCHS=25,         # more epochs -- dataset is small so each epoch is fast
     BATCH_SIZE=16,     # smaller batch for small dataset
     LR=1e-3,
-    WEIGHT_DECAY=5e-2, # strong L2 — matches ECA-NFNet-L0's regularisation philosophy
-    GOLD_OVERSAMPLE=3, # repeat gold soundscape segments 3× per epoch
+    WEIGHT_DECAY=5e-2, # strong L2 -- matches ECA-NFNet-L0's regularisation philosophy
+    GOLD_OVERSAMPLE=3, # repeat gold soundscape segments 3x per epoch
     FOCAL_GAMMA=2.0,   # standard focal loss gamma
     FOCAL_ALPHA=0.25,  # positive class up-weight
     # Device
@@ -96,8 +96,8 @@ print(f"Device: {CFG['DEVICE']}")
 print(f"torch: {torch.__version__}, timm: {timm.__version__}")
 
 # %%
-# ── Label setup ───────────────────────────────────────────────────────────────
-# Full taxonomy → all 234 species in submission column order
+# -- Label setup ---------------------------------------------------------------
+# Full taxonomy -> all 234 species in submission column order
 taxonomy   = pd.read_csv(BASE_DIR / 'taxonomy.csv')
 label_list = taxonomy['primary_label'].tolist()    # 234 total (used for submission)
 label2idx  = {l: i for i, l in enumerate(label_list)}
@@ -109,7 +109,7 @@ nonbird_labels = nonbird_df['primary_label'].tolist()   # 72
 nonbird2idx    = {l: i for i, l in enumerate(nonbird_labels)}
 NONBIRD_CLASSES = len(nonbird_labels)                   # 72
 
-# iNat taxon ID → primary_label (ebird code) mapping
+# iNat taxon ID -> primary_label (ebird code) mapping
 # Needed because train_soundscapes_labels.csv uses iNat IDs, not ebird codes
 inat2label = dict(zip(
     taxonomy['inat_taxon_id'].astype(str),
@@ -125,18 +125,18 @@ print(nonbird_df['class_name'].value_counts())
 # %% [markdown]
 # ## Data Loading: Two Sources Combined
 #
-# **Source 1** — `train_audio/` clips from `train.csv` (limited but still useful):
+# **Source 1** -- `train_audio/` clips from `train.csv` (limited but still useful):
 # - 451 Amphibia, 199 Insecta (named species only), 99 Mammalia, 1 Reptilia
-# - Weighted by quality: iNat=0.4, XC<3=0.5, XC≥3=0.8
+# - Weighted by quality: iNat=0.4, XC<3=0.5, XC>=3=0.8
 #
-# **Source 2** — `train_soundscapes_labels.csv` expert annotations (the critical source):
+# **Source 2** -- `train_soundscapes_labels.csv` expert annotations (the critical source):
 # - Real Pantanal PAM recordings, expert-verified 5s segments
-# - Contains insect sonotypes (47158son01–son25) that have no `train_audio` clips
+# - Contains insect sonotypes (47158son01-son25) that have no `train_audio` clips
 # - Column format: `filename`, `start` (HH:MM:SS), `end` (HH:MM:SS), `primary_label` (iNat IDs)
-# - Gold weight=1.0, oversampled 3× per epoch
+# - Gold weight=1.0, oversampled 3x per epoch
 
 # %%
-# ── Sample weight helper ──────────────────────────────────────────────────────
+# -- Sample weight helper ------------------------------------------------------
 def get_sample_weight(row):
     """
     Quality-based sample weight. Matches the weighting used in nb06 (bird pipeline).
@@ -151,7 +151,7 @@ def get_sample_weight(row):
     return 0.5
 
 
-# ── Parse HH:MM:SS → seconds ─────────────────────────────────────────────────
+# -- Parse HH:MM:SS -> seconds -------------------------------------------------
 def hms_to_seconds(t):
     """Convert 'HH:MM:SS' or 'MM:SS' string to float seconds."""
     try:
@@ -165,7 +165,7 @@ def hms_to_seconds(t):
     return 0.0
 
 
-# ── Source 1: train.csv non-bird clips ────────────────────────────────────────
+# -- Source 1: train.csv non-bird clips ----------------------------------------
 train_df = pd.read_csv(BASE_DIR / 'train.csv')
 nonbird_clips = train_df[train_df['primary_label'].isin(nonbird_labels)].copy()
 nonbird_clips['target_labels'] = nonbird_clips['primary_label']   # single label string
@@ -176,24 +176,24 @@ nonbird_clips['source_type'] = 'clip'
 nonbird_clips['start_sec']   = 0.0
 nonbird_clips['site']        = nonbird_clips.get('recorder_id', 'clip_' + nonbird_clips['primary_label'])
 
-print(f"Source 1 — train_audio non-bird clips: {len(nonbird_clips)}")
+print(f"Source 1 -- train_audio non-bird clips: {len(nonbird_clips)}")
 print(nonbird_clips['class_name'].value_counts())
 
 # %%
-# ── Source 2: train_soundscapes_labels.csv expert segments ────────────────────
+# -- Source 2: train_soundscapes_labels.csv expert segments --------------------
 soundscape_labels_path = BASE_DIR / 'train_soundscapes_labels.csv'
 
 if soundscape_labels_path.exists():
     sl_df = pd.read_csv(soundscape_labels_path)
-    print("\ntrain_soundscapes_labels.csv — raw head:")
+    print("\ntrain_soundscapes_labels.csv -- raw head:")
     print(sl_df.head(3))
     print("\nColumn dtypes:")
     print(sl_df.dtypes)
 
-    # Convert start HH:MM:SS → float seconds (librosa offset parameter)
+    # Convert start HH:MM:SS -> float seconds (librosa offset parameter)
     sl_df['start_sec'] = sl_df['start'].apply(hms_to_seconds)
 
-    # Map iNat taxon IDs → ebird codes
+    # Map iNat taxon IDs -> ebird codes
     # primary_label column contains semicolon-separated iNat IDs e.g. "22961;23158;24321"
     def map_inat_ids_to_ebird(inat_str):
         """Convert semicolon-separated iNat IDs to list of known ebird codes."""
@@ -219,18 +219,18 @@ if soundscape_labels_path.exists():
         lambda f: str(BASE_DIR / 'train_soundscapes' / f))
     sl_df['weight']      = 1.0        # Gold weight
     sl_df['source_type'] = 'gold'
-    # Site from filename: BC2026_Train_0039_S22_20211231_201500.ogg → 'S22'
+    # Site from filename: BC2026_Train_0039_S22_20211231_201500.ogg -> 'S22'
     sl_df['site'] = sl_df['filename'].str.extract(r'_(S\d+)_')[0].fillna('unknown')
 
     print(f"\nGold segments containing non-bird species: {len(sl_df)}")
 
-    # Repeat gold segments GOLD_OVERSAMPLE times (they're high-quality — prioritise them)
+    # Repeat gold segments GOLD_OVERSAMPLE times (they're high-quality -- prioritise them)
     gold_repeated = pd.concat([sl_df] * CFG['GOLD_OVERSAMPLE'], ignore_index=True)
     combined_df   = pd.concat([nonbird_clips, gold_repeated], ignore_index=True)
 
 else:
-    print("WARNING: train_soundscapes_labels.csv not found — using clips only")
-    print("  Insect sonotypes (47158son01–son25) will have 0 training samples!")
+    print("WARNING: train_soundscapes_labels.csv not found -- using clips only")
+    print("  Insect sonotypes (47158son01-son25) will have 0 training samples!")
     combined_df = nonbird_clips
 
 print(f"\nTotal combined training rows: {len(combined_df)}")
@@ -243,7 +243,7 @@ print(combined_df['source_type'].value_counts())
 # Key differences from BirdDataset (nb06):
 # - `target` is a **multi-hot vector** of length 72 (NONBIRD_CLASSES)
 # - For gold segments: uses `librosa.load(..., offset=start_sec, duration=5)` to extract
-#   the exact 5s window from a long soundscape file — avoids loading the full recording
+#   the exact 5s window from a long soundscape file -- avoids loading the full recording
 # - `target_labels` column stores comma-separated ebird codes for multi-hot encoding
 
 # %%
@@ -313,7 +313,7 @@ class NonBirdDataset(Dataset):
         if self.augment:
             S = self._spec_augment(S)
 
-        # Multi-hot target — handles both single-label clips and multi-label gold segments
+        # Multi-hot target -- handles both single-label clips and multi-label gold segments
         target = np.zeros(NONBIRD_CLASSES, dtype=np.float32)
         labels_str = str(row.get('target_labels', ''))
         for label in labels_str.split(','):
@@ -337,13 +337,13 @@ class NonBirdDataset(Dataset):
 # 2. **Scaled Weight Standardisation**: built-in gradient clipping substitute; more stable
 #    training on small datasets
 # 3. **ECA attention**: Efficient Channel Attention adds feature recalibration with near-zero
-#    parameter overhead — helps distinguish acoustically similar frog species
+#    parameter overhead -- helps distinguish acoustically similar frog species
 
 # %%
 class BirdModel(nn.Module):
     """
     Generic timm backbone adapted for single-channel mel spectrograms.
-    Same class used in nb06 (bird pipeline) — backbone name drives the architecture.
+    Same class used in nb06 (bird pipeline) -- backbone name drives the architecture.
     """
     def __init__(self, model_name, num_classes, pretrained=True):
         super().__init__()
@@ -361,10 +361,10 @@ class BirdModel(nn.Module):
 #
 # Standard BCE treats every negative sample equally.
 # **Focal BCE** introduces a modulating factor `(1 - p_t)^gamma`:
-# - When `p_t → 1` (easy correct prediction): factor → 0, loss down-weighted
-# - When `p_t → 0` (hard wrong prediction): factor → 1, loss at full weight
+# - When `p_t -> 1` (easy correct prediction): factor -> 0, loss down-weighted
+# - When `p_t -> 0` (hard wrong prediction): factor -> 1, loss at full weight
 #
-# For `gamma=2`, easy examples contribute ~100× less loss than hard examples.
+# For `gamma=2`, easy examples contribute ~100x less loss than hard examples.
 # This is essential here because most "non-Caiman" samples are trivially easy
 # negatives for Caiman, and without focal loss, those easy negatives dominate.
 
@@ -406,7 +406,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, criterion, device):
         X, y, w = X.to(device), y.to(device), w.to(device)
         optimizer.zero_grad()
         logits = model(X)
-        # Per-class loss → mean over classes → weighted mean over batch
+        # Per-class loss -> mean over classes -> weighted mean over batch
         loss_per_sample = criterion(logits, y)   # scalar (mean reduction in FocalBCELoss)
         # Re-weight by sample quality; note: criterion returns mean, so re-apply weights
         loss = loss_per_sample * w.mean()
@@ -421,7 +421,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, criterion, device):
 def validate(model, loader, device):
     """
     Validation: compute macro ROC-AUC across all 72 non-bird classes.
-    Uses sigmoid (not softmax) — this is multi-label, not multi-class.
+    Uses sigmoid (not softmax) -- this is multi-label, not multi-class.
     """
     model.eval()
     criterion  = FocalBCELoss(gamma=CFG['FOCAL_GAMMA'], alpha=CFG['FOCAL_ALPHA'])
@@ -510,7 +510,7 @@ for fold, (train_idx, val_idx) in enumerate(
             best_auc = vl_auc
             torch.save(model.state_dict(),
                        OUTPUT_DIR / f'nonbird_fold{fold}.pth')
-            print(f"    ✓ saved (auc={best_auc:.4f})")
+            print(f"    OK saved (auc={best_auc:.4f})")
 
     # OOF predictions from best checkpoint
     model.load_state_dict(torch.load(OUTPUT_DIR / f'nonbird_fold{fold}.pth',
@@ -529,12 +529,12 @@ for fold, (train_idx, val_idx) in enumerate(
     torch.cuda.empty_cache(); gc.collect()
 
 print(f"\n{'='*60}")
-print(f"  Non-Bird CV AUC: {np.mean(fold_aucs):.4f} ± {np.std(fold_aucs):.4f}")
+print(f"  Non-Bird CV AUC: {np.mean(fold_aucs):.4f} ? {np.std(fold_aucs):.4f}")
 print(f"  Per-fold: {[round(a,4) for a in fold_aucs]}")
 print(f"{'='*60}")
 
 # %%
-# ── Training curves ───────────────────────────────────────────────────────────
+# -- Training curves -----------------------------------------------------------
 hist_df = pd.DataFrame(history)
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -577,7 +577,7 @@ print(f"Test soundscapes found: {len(test_soundscapes)}")
 
 def predict_soundscape_nonbird(audio_path, model, cfg, device):
     """
-    Slide 5s windows over a soundscape, return dict of row_id → NONBIRD_CLASSES probs.
+    Slide 5s windows over a soundscape, return dict of row_id -> NONBIRD_CLASSES probs.
     row_id format: {stem}_{end_sec}
     """
     try:
@@ -637,7 +637,7 @@ nonbird_pred_df = pd.DataFrame.from_dict(
 nonbird_pred_df.index.name = 'row_id'
 nonbird_pred_df = nonbird_pred_df.reset_index()
 
-# Start from sample_submission → merge non-bird columns
+# Start from sample_submission -> merge non-bird columns
 sub = sample_sub[['row_id']].copy()
 sub = sub.merge(nonbird_pred_df, on='row_id', how='left')
 
@@ -679,12 +679,12 @@ try:
         opset_version=11,
         dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}},
     )
-    print(f"ONNX export successful → {onnx_path}")
+    print(f"ONNX export successful -> {onnx_path}")
 except Exception as e:
     print(f"ONNX export failed: {e}")
 
 # %%
-# ── Save experiment results ───────────────────────────────────────────────────
+# -- Save experiment results ---------------------------------------------------
 oof_results = {
     'model':          CFG['MODEL_NAME'],
     'pipeline':       'non_bird',

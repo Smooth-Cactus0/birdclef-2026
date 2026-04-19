@@ -1,15 +1,15 @@
 # %%
 # =============================================================================
-# BirdCLEF 2026 — Final Ensemble Submission
+# BirdCLEF 2026 -- Final Ensemble Submission
 # =============================================================================
-# Bird pipeline  : B1 + B3 + B4 + RegNetY-016 + BirdNET → rank averaging (162 cols)
-# Non-bird pipeline: ECA-NFNet-L0 + B3-focal → weighted avg 0.6/0.4 (72 cols)
+# Bird pipeline  : B1 + B3 + B4 + RegNetY-016 + BirdNET -> rank averaging (162 cols)
+# Non-bird pipeline: ECA-NFNet-L0 + B3-focal -> weighted avg 0.6/0.4 (72 cols)
 # Inference: OpenVINO FP16 (CPU budget ~59 min)
 # Post-processing: geotemporal prior (Pantanal species filter)
 # =============================================================================
 
 # %% [markdown]
-# # BirdCLEF 2026 — Final Ensemble Submission
+# # BirdCLEF 2026 -- Final Ensemble Submission
 #
 # This notebook loads all trained ONNX / OpenVINO models from both pipelines,
 # runs efficient CPU inference over the test soundscapes, rank-averages the
@@ -19,10 +19,10 @@
 # **Pipeline overview**
 # ```
 # test_soundscapes/
-#   └─ chunk into 5s windows
-#         ├─ bird_models (B1, B3, B4, RegNetY, BirdNET) → (N, 162) each → rank average
-#         └─ nonbird_models (ECA-NFNet-L0, B3-focal)   → (N, 72)  each → weighted avg
-#               └─ merge into (N, 234) → submission.csv
+#   ?- chunk into 5s windows
+#         ?- bird_models (B1, B3, B4, RegNetY, BirdNET) -> (N, 162) each -> rank average
+#         ?- nonbird_models (ECA-NFNet-L0, B3-focal)   -> (N, 72)  each -> weighted avg
+#               ?- merge into (N, 234) -> submission.csv
 # ```
 #
 # **Why rank averaging?**
@@ -33,7 +33,7 @@
 # robust to miscalibration than simply averaging probabilities.
 
 # %%
-# ── Version pins ──────────────────────────────────────────────────────────────
+# -- Version pins --------------------------------------------------------------
 # !pip install -q openvino==2024.0.0 onnxruntime==1.18.0  # uncomment on Kaggle
 
 import os, gc, json, time, warnings
@@ -46,25 +46,25 @@ import librosa
 
 warnings.filterwarnings('ignore')
 
-# OpenVINO — optional but strongly preferred (8-12x faster than PyTorch on CPU)
+# OpenVINO -- optional but strongly preferred (8-12x faster than PyTorch on CPU)
 try:
     import openvino as ov
     OPENVINO_AVAILABLE = True
-    print(f"OpenVINO {ov.__version__} available ✓")
+    print(f"OpenVINO {ov.__version__} available OK")
 except ImportError:
     OPENVINO_AVAILABLE = False
-    print("OpenVINO not available — falling back to ONNX Runtime")
+    print("OpenVINO not available -- falling back to ONNX Runtime")
 
-# ONNX Runtime — secondary backend
+# ONNX Runtime -- secondary backend
 try:
     import onnxruntime as ort
     ORT_AVAILABLE = True
-    print(f"ONNX Runtime {ort.__version__} available ✓")
+    print(f"ONNX Runtime {ort.__version__} available OK")
 except ImportError:
     ORT_AVAILABLE = False
-    print("onnxruntime not found — install with: pip install onnxruntime")
+    print("onnxruntime not found -- install with: pip install onnxruntime")
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# -- Paths ---------------------------------------------------------------------
 BASE_DIR   = (Path('/kaggle/input/competitions/birdclef-2026')
               if Path('/kaggle/input/competitions/birdclef-2026').exists()
               else Path('birdclef-2026'))
@@ -72,11 +72,11 @@ OUTPUT_DIR = Path('/kaggle/working') if Path('/kaggle/working').exists() else Pa
 OUTPUT_DIR.mkdir(exist_ok=True)
 NUM_WORKERS = 0 if os.name == 'nt' else 4
 
-# ── Audio config ──────────────────────────────────────────────────────────────
+# -- Audio config --------------------------------------------------------------
 CFG = dict(
     SR=32000, N_FFT=1024, HOP_LENGTH=320, N_MELS=128, FMIN=40, FMAX=15000,
     DURATION=5,        # seconds per inference chunk
-    BATCH_SIZE=32,     # chunks per forward pass — 32 is efficient on CPU
+    BATCH_SIZE=32,     # chunks per forward pass -- 32 is efficient on CPU
 )
 N_FRAMES = 1 + (CFG['SR'] * CFG['DURATION'] // CFG['HOP_LENGTH'])  # 501
 print(f"Chunk shape: (batch, 1, {CFG['N_MELS']}, {N_FRAMES})")
@@ -85,9 +85,9 @@ print(f"Chunk shape: (batch, 1, {CFG['N_MELS']}, {N_FRAMES})")
 # ## Label setup
 #
 # We build three label arrays from taxonomy.csv:
-# - `label_list` — all 234 species in taxonomy order (submission column order)
-# - `bird_labels` — 162 Aves species (bird pipeline output columns)
-# - `nonbird_labels` — 72 non-Aves species (non-bird pipeline output columns)
+# - `label_list` -- all 234 species in taxonomy order (submission column order)
+# - `bird_labels` -- 162 Aves species (bird pipeline output columns)
+# - `nonbird_labels` -- 72 non-Aves species (non-bird pipeline output columns)
 
 # %%
 taxonomy   = pd.read_csv(BASE_DIR / 'taxonomy.csv')
@@ -116,7 +116,7 @@ print(f"Non-bird classes: {NONBIRD_CLASSES}")
 # These paths assume the corresponding Kaggle output datasets have been
 # added as inputs to this notebook. Update the dataset names when uploading.
 #
-# **If an ONNX file is not found the model is skipped gracefully** — the
+# **If an ONNX file is not found the model is skipped gracefully** -- the
 # ensemble still runs on whatever models are available.
 
 # %%
@@ -145,19 +145,19 @@ def load_session(path: str):
     """
     p = Path(path)
     if not p.exists():
-        print(f"  [SKIP] {p.name} not found — add the matching dataset to this notebook")
+        print(f"  [SKIP] {p.name} not found -- add the matching dataset to this notebook")
         return None
     if OPENVINO_AVAILABLE:
         core    = ov.Core()
         ov_mdl  = core.read_model(str(p))
         session = core.compile_model(ov_mdl, 'CPU')
-        print(f"  [OV]  {p.name} loaded ✓")
+        print(f"  [OV]  {p.name} loaded OK")
         return ('ov', session)
     if ORT_AVAILABLE:
         session = ort.InferenceSession(str(p), providers=['CPUExecutionProvider'])
-        print(f"  [ORT] {p.name} loaded ✓")
+        print(f"  [ORT] {p.name} loaded OK")
         return ('ort', session)
-    print("  [ERR] Neither OpenVINO nor ONNX Runtime available — cannot load model")
+    print("  [ERR] Neither OpenVINO nor ONNX Runtime available -- cannot load model")
     return None
 
 
@@ -171,7 +171,7 @@ def run_session(session_tuple, x_np: np.ndarray) -> np.ndarray:
 
     Returns
     -------
-    logits : (B, C) float32 — apply sigmoid outside this function
+    logits : (B, C) float32 -- apply sigmoid outside this function
     """
     kind, session = session_tuple
     if kind == 'ov':
@@ -210,7 +210,7 @@ print(f"Non-bird models loaded: {len(nonbird_sessions)}/{len(NONBIRD_MODELS)}")
 
 # %%
 def make_mel_spectrogram(audio: np.ndarray, cfg: dict) -> np.ndarray:
-    """1-D audio → (1, N_MELS, n_frames) float32, normalised to [0, 1]."""
+    """1-D audio -> (1, N_MELS, n_frames) float32, normalised to [0, 1]."""
     mel = librosa.feature.melspectrogram(
         y=audio,
         sr=cfg['SR'], n_fft=cfg['N_FFT'], hop_length=cfg['HOP_LENGTH'],
@@ -227,7 +227,7 @@ def collect_chunks(soundscape_paths: list, cfg: dict) -> tuple:
     Returns
     -------
     chunks_arr : (N_total, 1, N_MELS, n_frames) float32
-    chunk_ids  : list[str] of row_ids — '{stem}_{end_sec}'
+    chunk_ids  : list[str] of row_ids -- '{stem}_{end_sec}'
     """
     n_frames  = 1 + (cfg['SR'] * cfg['DURATION'] // cfg['HOP_LENGTH'])
     chunk_len = cfg['SR'] * cfg['DURATION']
@@ -247,7 +247,7 @@ def collect_chunks(soundscape_paths: list, cfg: dict) -> tuple:
             start   = i * chunk_len
             segment = audio[start : start + chunk_len]
             mel     = make_mel_spectrogram(segment, cfg)
-            # Guarantee exact frame count (librosa rounding can differ by ±1)
+            # Guarantee exact frame count (librosa rounding can differ by ?1)
             if mel.shape[-1] < n_frames:
                 mel = np.pad(mel, ((0, 0), (0, 0), (0, n_frames - mel.shape[-1])))
             else:
@@ -268,7 +268,7 @@ def collect_chunks(soundscape_paths: list, cfg: dict) -> tuple:
 # session and returns sigmoid probabilities `(N, C)`.
 #
 # `rank_average` converts each model's output to within-row ranks then
-# averages — the output values are in [1, C] rank space, but ordering is
+# averages -- the output values are in [1, C] rank space, but ordering is
 # preserved for the final submission (only relative order matters for AUC).
 #
 # `weighted_average` takes a list of `(N, C)` arrays and scalar weights,
@@ -287,7 +287,7 @@ def run_model_on_chunks(session_tuple, chunks_arr: np.ndarray,
 
     Returns
     -------
-    probs : (N, C) float32  — sigmoid applied
+    probs : (N, C) float32  -- sigmoid applied
     """
     N = len(chunks_arr)
     all_probs = []
@@ -308,7 +308,7 @@ def rank_average(pred_list: list) -> np.ndarray:
 
     Returns
     -------
-    avg_ranks : (N, C) float64 — values in [1, C]; higher = more likely
+    avg_ranks : (N, C) float64 -- values in [1, C]; higher = more likely
     """
     ranked = [rankdata(p, axis=1).astype(np.float32) for p in pred_list]
     return np.mean(ranked, axis=0)
@@ -320,7 +320,7 @@ def weighted_average(pred_list: list, weights: list) -> np.ndarray:
     Parameters
     ----------
     pred_list : list of (N, C) arrays
-    weights   : list of floats (need not sum to 1 — normalised internally)
+    weights   : list of floats (need not sum to 1 -- normalised internally)
 
     Returns
     -------
@@ -338,22 +338,22 @@ def weighted_average(pred_list: list, weights: list) -> np.ndarray:
 # 1. Discover all test soundscapes, sort shortest-first so any timeout
 #    produces a valid partial submission rather than crashing with no output.
 # 2. Collect all 5s chunks in a single audio pass (one read per soundscape).
-# 3. Run each bird model over all chunks → rank-average → `(N, 162)`.
-# 4. Run each non-bird model over all chunks → weighted-average → `(N, 72)`.
+# 3. Run each bird model over all chunks -> rank-average -> `(N, 162)`.
+# 4. Run each non-bird model over all chunks -> weighted-average -> `(N, 72)`.
 
 # %%
 soundscape_dir = BASE_DIR / 'test_soundscapes'
 if soundscape_dir.exists():
-    # Sort by file size (proxy for duration) — shortest first for partial-submission safety
+    # Sort by file size (proxy for duration) -- shortest first for partial-submission safety
     sc_paths = sorted(soundscape_dir.glob('*.ogg'), key=lambda p: p.stat().st_size)
     print(f"Found {len(sc_paths)} test soundscapes")
 else:
-    print("[WARN] test_soundscapes/ not found — using empty list for demo")
+    print("[WARN] test_soundscapes/ not found -- using empty list for demo")
     sc_paths = []
 
 t_start = time.time()
 
-# ── Step 1: Collect all chunks ────────────────────────────────────────────────
+# -- Step 1: Collect all chunks ------------------------------------------------
 print("\nLoading and chunking all soundscapes ...")
 t0 = time.time()
 chunks_arr, chunk_ids = collect_chunks(sc_paths, CFG)
@@ -362,12 +362,12 @@ print(f"  {n_chunks} chunks collected in {time.time() - t0:.1f}s")
 
 # Handle edge case: no test soundscapes available (e.g. local dev run)
 if n_chunks == 0:
-    print("[WARN] No chunks collected — generating dummy output for demo")
+    print("[WARN] No chunks collected -- generating dummy output for demo")
     chunks_arr = np.zeros((10, 1, CFG['N_MELS'], N_FRAMES), dtype=np.float32)
     chunk_ids  = [f"demo_soundscape_{i*5}" for i in range(1, 11)]
     n_chunks   = 10
 
-# ── Step 2: Bird pipeline ─────────────────────────────────────────────────────
+# -- Step 2: Bird pipeline -----------------------------------------------------
 print(f"\nRunning {len(bird_sessions)} bird model(s) on {n_chunks} chunks ...")
 bird_preds_list = []
 for label, sess, n_cls in bird_sessions:
@@ -381,10 +381,10 @@ if bird_preds_list:
     bird_preds_ranked = rank_average(bird_preds_list)   # (N, 162)
     print(f"Rank-averaged bird predictions: {bird_preds_ranked.shape}")
 else:
-    print("[WARN] No bird models loaded — filling bird columns with uniform prior")
+    print("[WARN] No bird models loaded -- filling bird columns with uniform prior")
     bird_preds_ranked = np.full((n_chunks, BIRD_CLASSES), 1.0 / NUM_CLASSES, dtype=np.float32)
 
-# ── Step 3: Non-bird pipeline ─────────────────────────────────────────────────
+# -- Step 3: Non-bird pipeline -------------------------------------------------
 print(f"\nRunning {len(nonbird_sessions)} non-bird model(s) on {n_chunks} chunks ...")
 nonbird_preds_list = []
 for label, sess, n_cls in nonbird_sessions:
@@ -400,14 +400,14 @@ if nonbird_preds_list:
     nonbird_preds_weighted = weighted_average(nonbird_preds_list, active_nb_weights)  # (N, 72)
     print(f"Weighted-averaged non-bird predictions: {nonbird_preds_weighted.shape}")
 else:
-    print("[WARN] No non-bird models loaded — filling non-bird columns with uniform prior")
+    print("[WARN] No non-bird models loaded -- filling non-bird columns with uniform prior")
     nonbird_preds_weighted = np.full((n_chunks, NONBIRD_CLASSES), 1.0 / NUM_CLASSES, dtype=np.float32)
 
 # %% [markdown]
 # ## Merge bird + non-bird into 234-column prediction array
 #
 # The submission requires **all 234 species in taxonomy order**.
-# Bird and non-bird predictions live in separate index spaces (0–161 and 0–71).
+# Bird and non-bird predictions live in separate index spaces (0-161 and 0-71).
 # We map each back to its global `label2idx` position.
 #
 # Note: rank-averaged bird values are in [1, 162] scale. We normalise them to
@@ -439,12 +439,12 @@ print(f"full_preds shape: {full_preds.shape}  (expected: ({n_chunks}, {NUM_CLASS
 #
 # The Pantanal region is geographically specific. Species that do not occur in
 # the Mato Grosso do Sul area can have their predictions floored to near-zero
-# without risking AUC loss on true positives — those species should score zero
+# without risking AUC loss on true positives -- those species should score zero
 # anyway if the training data is correctly labelled.
 #
 # The list below is intentionally empty until validated against eBird / iNat
-# occurrence data for the recorder coordinates (-21.6→-16.5 lat, -57.6→-55.9 lon).
-# **Only add species here after explicit verification** — wrong filtering costs AUC.
+# occurrence data for the recorder coordinates (-21.6->-16.5 lat, -57.6->-55.9 lon).
+# **Only add species here after explicit verification** -- wrong filtering costs AUC.
 
 # %%
 # Species confirmed absent from the Pantanal PAM recorder region
@@ -457,9 +457,9 @@ for species_label in PANTANAL_ABSENT:
         full_preds[:, col] = np.minimum(full_preds[:, col], 0.001)
 
 if PANTANAL_ABSENT:
-    print(f"Geotemporal prior applied: {len(PANTANAL_ABSENT)} species floored to ≤ 0.001")
+    print(f"Geotemporal prior applied: {len(PANTANAL_ABSENT)} species floored to <= 0.001")
 else:
-    print("Geotemporal prior: no species filtered (list empty — add after eBird validation)")
+    print("Geotemporal prior: no species filtered (list empty -- add after eBird validation)")
 
 # %% [markdown]
 # ## Build and save submission
@@ -514,7 +514,7 @@ print(f"  ms per chunk           : {ms_per_chunk:.1f} ms")
 print(f"  Bird models used       : {[l for l, _, _ in bird_sessions]}")
 print(f"  Non-bird models used   : {[l for l, _, _ in nonbird_sessions]}")
 print(f"  Budget remaining       : {budget_remaining_min:.1f} min  "
-      f"({'OK ✓' if budget_remaining_min > 5 else 'TIGHT ⚠'})")
+      f"({'OK OK' if budget_remaining_min > 5 else 'TIGHT ?'})")
 print("=" * 60)
 
 # Save runtime stats for reproducibility
@@ -532,24 +532,24 @@ runtime_stats = {
 }
 with open(OUTPUT_DIR / 'inference_stats.json', 'w') as f:
     json.dump(runtime_stats, f, indent=2)
-print(f"\nRuntime stats saved → {OUTPUT_DIR / 'inference_stats.json'}")
+print(f"\nRuntime stats saved -> {OUTPUT_DIR / 'inference_stats.json'}")
 
 # %% [markdown]
 # ## Pre-submission checklist
 #
 # Before committing this as the final submission notebook:
 #
-# 1. **Attach all model datasets** — each ONNX path in `BIRD_MODELS` /
+# 1. **Attach all model datasets** -- each ONNX path in `BIRD_MODELS` /
 #    `NONBIRD_MODELS` must resolve to a file. Check `[SKIP]` warnings above.
 #
-# 2. **Verify column order** — `sub.columns[1:]` must match
+# 2. **Verify column order** -- `sub.columns[1:]` must match
 #    `sample_submission.columns[1:]` exactly (taxonomy order).
 #
-# 3. **Profile on Kaggle CPU (GPU off)** — wall-clock on your laptop will
+# 3. **Profile on Kaggle CPU (GPU off)** -- wall-clock on your laptop will
 #    differ from Kaggle servers. Run this notebook with the Kaggle accelerator
 #    set to "None" and check `budget_remaining_min` is > 10.
 #
-# 4. **Check NaN / Inf** — `sub[label_list].isna().sum().sum()` should be 0.
+# 4. **Check NaN / Inf** -- `sub[label_list].isna().sum().sum()` should be 0.
 #
-# 5. **Sort soundscapes shortest-first** — already done above; ensures any
+# 5. **Sort soundscapes shortest-first** -- already done above; ensures any
 #    partial timeout still produces a valid (incomplete) submission file.

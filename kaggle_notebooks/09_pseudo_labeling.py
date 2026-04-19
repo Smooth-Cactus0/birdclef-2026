@@ -1,6 +1,6 @@
 # %%
 # =============================================================================
-# BirdCLEF 2026 — Pseudo-Labeling Pipeline (Round 1)
+# BirdCLEF 2026 -- Pseudo-Labeling Pipeline (Round 1)
 # =============================================================================
 # Models    : Bird model (B4/B3) + RegNetY + optional ViT models (EVA-02, DINOv2)
 # Consensus : 2-of-3 agreement on top-1 prediction
@@ -11,7 +11,7 @@
 # HOW TO USE:
 #   1. Run nb06 to train backbone checkpoints (B4, B3, RegNetY)
 #   2. Point CHECKPOINT_DIR to the folder containing *.pth files
-#   3. Run this notebook — it writes pseudo_labels_r1.csv to OUTPUT_DIR
+#   3. Run this notebook -- it writes pseudo_labels_r1.csv to OUTPUT_DIR
 #   4. In nb06/nb07 next round, add pseudo_labels_r1.csv to training data
 #      with sample weight = 0.5 (PL-R1 weight per design doc)
 # =============================================================================
@@ -23,7 +23,7 @@
 # between top-5 and top-1 in BirdCLEF 2025 (Nikita Babych, 4+ rounds).
 
 # %%
-# ── Install / version pins ────────────────────────────────────────────────────
+# -- Install / version pins ----------------------------------------------------
 # !pip install -q timm==1.0.3  # uncomment on Kaggle if needed
 
 import os, gc, json, warnings
@@ -39,7 +39,7 @@ import torch.nn as nn
 import timm
 warnings.filterwarnings('ignore')
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# -- Paths ---------------------------------------------------------------------
 BASE_DIR   = (Path('/kaggle/input/birdclef-2026')
               if Path('/kaggle/input/birdclef-2026').exists()
               else Path('birdclef-2026'))
@@ -52,7 +52,7 @@ CHECKPOINT_DIR = OUTPUT_DIR   # default: same session outputs
 
 NUM_WORKERS = 0 if os.name == 'nt' else 4
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 CFG = dict(
     SR          = 32000,
     N_FFT       = 1024,
@@ -76,7 +76,7 @@ print(f"torch: {torch.__version__}, timm: {timm.__version__}")
 # The non-bird subset (72 classes) is handled by nb08 checkpoints.
 
 # %%
-# ── Label setup ───────────────────────────────────────────────────────────────
+# -- Label setup ---------------------------------------------------------------
 taxonomy    = pd.read_csv(BASE_DIR / 'taxonomy.csv')
 label_list  = taxonomy['primary_label'].tolist()   # 234 total
 label2idx   = {l: i for i, l in enumerate(label_list)}
@@ -97,11 +97,11 @@ print(f"Total classes: {NUM_CLASSES} | Bird: {BIRD_CLASSES} | Non-bird: {NONBIRD
 # %% [markdown]
 # ## Class Rarity Lookup
 # Confidence thresholds are stratified by how many training clips each class has.
-# Rare species need a *higher* threshold — a wrong pseudo-label for a class with
+# Rare species need a *higher* threshold -- a wrong pseudo-label for a class with
 # 3 real clips would represent a 33% corruption of its training data.
 
 # %%
-# ── Class rarity and thresholds ───────────────────────────────────────────────
+# -- Class rarity and thresholds -----------------------------------------------
 train_df   = pd.read_csv(BASE_DIR / 'train.csv')
 clip_counts = train_df['primary_label'].value_counts().to_dict()
 
@@ -124,7 +124,7 @@ def get_threshold(label: str) -> float:
     already-small training sets.
     """
     n = clip_counts.get(label, 0)
-    if n > 500: return 0.70   # common — accept moderate confidence
+    if n > 500: return 0.70   # common -- accept moderate confidence
     if n > 100: return 0.80   # medium
     if n > 10:  return 0.85   # rare
     return 0.90               # very rare (< 10 clips, all non-bird species)
@@ -135,7 +135,7 @@ def get_threshold(label: str) -> float:
 # We load fold-1 checkpoints (best checkpoint saved during training).
 
 # %%
-# ── Model definition (must match nb06/nb07 exactly) ───────────────────────────
+# -- Model definition (must match nb06/nb07 exactly) ---------------------------
 class BirdModel(nn.Module):
     """timm backbone, in_chans=1, configurable num_classes."""
     def __init__(self, model_name: str, num_classes: int, pretrained: bool = False):
@@ -155,23 +155,23 @@ def load_model(checkpoint_path, model_name: str, num_classes: int, device: str):
     """
     path = Path(checkpoint_path)
     if not path.exists():
-        print(f"  ✗ Checkpoint not found: {path}")
+        print(f"  ? Checkpoint not found: {path}")
         return None
     model = BirdModel(model_name, num_classes, pretrained=False)
     model.load_state_dict(torch.load(str(path), map_location=device))
     model = model.to(device).eval()
-    print(f"  ✓ Loaded: {path.name}  ({num_classes} classes)")
+    print(f"  OK Loaded: {path.name}  ({num_classes} classes)")
     return model
 
 
 # %% [markdown]
 # ## Load Available Models
 # We try to load up to 3 bird-pipeline models from nb06 checkpoints.
-# Consensus requires ≥ 2 models; the notebook warns if fewer are available.
+# Consensus requires >= 2 models; the notebook warns if fewer are available.
 # Non-bird models from nb08 can be added in the same pattern.
 
 # %%
-# ── Load checkpoint models ────────────────────────────────────────────────────
+# -- Load checkpoint models ----------------------------------------------------
 print("Loading bird-pipeline models (from nb06 checkpoints)...")
 models = {}
 
@@ -197,7 +197,7 @@ if m: models['birdnet'] = m
 
 print(f"\nModels loaded: {list(models.keys())}")
 if len(models) < 2:
-    print("\nWARNING: Need ≥2 models for consensus pseudo-labeling.")
+    print("\nWARNING: Need >=2 models for consensus pseudo-labeling.")
     print("         Run nb06 first and ensure checkpoints are in CHECKPOINT_DIR.")
     print(f"         CHECKPOINT_DIR = {CHECKPOINT_DIR}")
 else:
@@ -210,7 +210,7 @@ else:
 # We use the exact same mel parameters as training (matching feature distributions).
 
 # %%
-# ── Soundscape chunker ────────────────────────────────────────────────────────
+# -- Soundscape chunker --------------------------------------------------------
 def chunk_soundscape(path: Path, cfg: dict):
     """
     Yield (start_sec: float, mel_tensor: torch.Tensor[1, N_MELS, T]) for each 5s chunk.
@@ -242,19 +242,19 @@ def chunk_soundscape(path: Path, cfg: dict):
 # 1. Get sigmoid probabilities from every model
 # 2. Apply power scaling: `p = p ** 0.7` (compresses overconfidence)
 # 3. Find each model's top-1 prediction
-# 4. Check if ≥2 models agree on the same top-1 label
+# 4. Check if >=2 models agree on the same top-1 label
 # 5. If agreed: check mean confidence against the rarity threshold
 # 6. Only emit a pseudo-label if threshold is passed
 
 # %%
-# ── Consensus logic ───────────────────────────────────────────────────────────
+# -- Consensus logic -----------------------------------------------------------
 def get_consensus_label(mel_tensor: torch.Tensor, models: dict,
                         label_list: list, cfg: dict, device: str):
     """
     Run a single mel chunk through all models and return a consensus pseudo-label.
 
     Args:
-        mel_tensor: shape (1, N_MELS, T) — single spectrogram chunk (no batch dim)
+        mel_tensor: shape (1, N_MELS, T) -- single spectrogram chunk (no batch dim)
         models: dict of {name: nn.Module}
         label_list: ordered list of class strings matching model output indices
         cfg: config dict with POWER_SCALE key
@@ -272,7 +272,7 @@ def get_consensus_label(mel_tensor: torch.Tensor, models: dict,
             logits = model(x)
             probs  = torch.sigmoid(logits).cpu().numpy()[0]   # (num_classes,)
         # Power scaling: soften overconfident predictions before voting
-        # e.g., prob=0.9 → 0.9**0.7 ≈ 0.927; prob=0.6 → 0.6**0.7 ≈ 0.671
+        # e.g., prob=0.9 -> 0.9**0.7 ? 0.927; prob=0.6 -> 0.6**0.7 ? 0.671
         probs = probs ** cfg['POWER_SCALE']
         model_preds[name] = probs
 
@@ -280,7 +280,7 @@ def get_consensus_label(mel_tensor: torch.Tensor, models: dict,
     top1_labels = {name: label_list[int(np.argmax(p))] for name, p in model_preds.items()}
     top1_confs  = {name: float(np.max(p))              for name, p in model_preds.items()}
 
-    # Majority vote: does ≥2 models agree?
+    # Majority vote: does >=2 models agree?
     vote_counts          = Counter(top1_labels.values())
     best_label, n_votes  = vote_counts.most_common(1)[0]
     min_votes_needed     = 2   # fixed at 2 regardless of ensemble size
@@ -303,10 +303,10 @@ def get_consensus_label(mel_tensor: torch.Tensor, models: dict,
 # %% [markdown]
 # ## Main Pseudo-Labeling Loop
 # Processes up to `CFG['MAX_FILES']` unlabeled soundscapes.
-# Set `MAX_FILES = None` to process all files (takes ~2–3h on T4 with 3 models).
+# Set `MAX_FILES = None` to process all files (takes ~2-3h on T4 with 3 models).
 
 # %%
-# ── Main PL loop ──────────────────────────────────────────────────────────────
+# -- Main PL loop --------------------------------------------------------------
 unlabeled_dir   = BASE_DIR / 'unlabeled_soundscapes'
 unlabeled_files = sorted(unlabeled_dir.glob('*.ogg')) if unlabeled_dir.exists() else []
 print(f"Unlabeled soundscapes available: {len(unlabeled_files)}")
@@ -316,7 +316,7 @@ if CFG['MAX_FILES'] is not None:
     print(f"Processing first {len(unlabeled_files)} files (MAX_FILES={CFG['MAX_FILES']})")
 
 if len(models) < 2:
-    print("Skipping PL generation — need ≥2 models loaded.")
+    print("Skipping PL generation -- need >=2 models loaded.")
     pl_df = pd.DataFrame(columns=['filepath', 'start_sec', 'end_sec',
                                   'primary_label', 'confidence', 'pl_round'])
 else:
@@ -361,17 +361,17 @@ print(f"\nSaved: {OUTPUT_DIR / 'pseudo_labels_r1.csv'}")
 # ## Statistics & Quality Diagnostics
 # Visualise the pseudo-label distribution to catch obvious failures:
 # - Is the distribution dominated by a handful of common species? (expected)
-# - Are there any very-rare species with many pseudo-labels? (suspicious — check)
-# - Is the confidence distribution bimodal? (good — high confidence = reliable labels)
+# - Are there any very-rare species with many pseudo-labels? (suspicious -- check)
+# - Is the confidence distribution bimodal? (good -- high confidence = reliable labels)
 
 # %%
-# ── Diagnostics plot ──────────────────────────────────────────────────────────
+# -- Diagnostics plot ----------------------------------------------------------
 if len(pl_df) == 0:
-    print("No pseudo-labels generated — cannot plot statistics.")
-    print("Ensure ≥2 model checkpoints are present in CHECKPOINT_DIR.")
+    print("No pseudo-labels generated -- cannot plot statistics.")
+    print("Ensure >=2 model checkpoints are present in CHECKPOINT_DIR.")
 else:
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle('Pseudo-Label Round 1 — Quality Diagnostics', fontsize=13, fontweight='bold')
+    fig.suptitle('Pseudo-Label Round 1 -- Quality Diagnostics', fontsize=13, fontweight='bold')
 
     # Plot 1: top-30 species by pseudo-label count
     ax = axes[0]
@@ -409,7 +409,7 @@ else:
     plt.savefig(OUTPUT_DIR / 'pseudo_labels_r1_diagnostics.png',
                 bbox_inches='tight', dpi=120)
     plt.show()
-    print(f"Diagnostics plot saved → {OUTPUT_DIR / 'pseudo_labels_r1_diagnostics.png'}")
+    print(f"Diagnostics plot saved -> {OUTPUT_DIR / 'pseudo_labels_r1_diagnostics.png'}")
 
     # Summary statistics by rarity tier
     print("\nPseudo-labels by rarity tier:")
@@ -427,7 +427,7 @@ else:
 # pl_r1 = pd.read_csv(OUTPUT_DIR / 'pseudo_labels_r1.csv')
 # pl_r1['weight'] = 0.5        # PL-R1 sample weight (lower than real data)
 # pl_r1['source_type'] = 'pl'
-# # filepath + start_sec → load offset in BirdDataset._load_audio
+# # filepath + start_sec -> load offset in BirdDataset._load_audio
 # train_df = pd.concat([train_df, pl_r1], ignore_index=True)
 # ```
 #
@@ -435,7 +435,7 @@ else:
 # pseudo_labels_r2.csv with weight=0.65. Repeat for R3/R4 (weight=0.75).
 
 # %%
-# ── Save metadata summary ────────────────────────────────────────────────────
+# -- Save metadata summary ----------------------------------------------------
 summary = {
     'pl_round':          1,
     'n_soundscapes':     len(unlabeled_files),

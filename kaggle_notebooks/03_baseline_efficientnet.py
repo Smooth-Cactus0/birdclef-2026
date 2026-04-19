@@ -320,13 +320,6 @@ sample_sub = pd.read_csv(BASE_DIR / 'sample_submission.csv')
 test_soundscapes = sorted((BASE_DIR / 'test_soundscapes').glob('*.ogg'))
 print(f"Test soundscapes found: {len(test_soundscapes)}")
 
-# Load best model (fold 1 by default; in practice ensemble all folds)
-inf_model = BirdModel(CFG['MODEL_NAME'], NUM_CLASSES, pretrained=False)
-inf_model.load_state_dict(torch.load(OUTPUT_DIR / 'model_fold1.pth',
-                                      map_location=CFG['DEVICE']))
-inf_model = inf_model.to(CFG['DEVICE'])
-inf_model.eval()
-
 def predict_soundscape(audio_path, model, cfg, device):
     """Slide 5s windows over a long soundscape, return dict of row_id → probs."""
     try:
@@ -365,10 +358,19 @@ def predict_soundscape(audio_path, model, cfg, device):
     return results
 
 all_preds = {}
-for sf_path in test_soundscapes:
-    preds = predict_soundscape(sf_path, inf_model, CFG, CFG['DEVICE'])
-    all_preds.update(preds)
-    print(f"  {sf_path.name}: {len(preds)} chunks")
+ckpt_path = OUTPUT_DIR / 'model_fold1.pth'
+if not ckpt_path.exists():
+    print(f"WARNING: {ckpt_path.name} not found — skipping inference, submission will be uniform prior")
+else:
+    inf_model = BirdModel(CFG['MODEL_NAME'], NUM_CLASSES, pretrained=False)
+    inf_model.load_state_dict(torch.load(ckpt_path, map_location=CFG['DEVICE']))
+    inf_model = inf_model.to(CFG['DEVICE'])
+    inf_model.eval()
+    for sf_path in test_soundscapes:
+        preds = predict_soundscape(sf_path, inf_model, CFG, CFG['DEVICE'])
+        all_preds.update(preds)
+        print(f"  {sf_path.name}: {len(preds)} chunks")
+    del inf_model; torch.cuda.empty_cache(); gc.collect()
 
 print(f"Total prediction rows: {len(all_preds)}")
 

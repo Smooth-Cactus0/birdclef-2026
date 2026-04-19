@@ -1,36 +1,36 @@
 # %%
 # =============================================================================
-# BirdCLEF 2026 — BirdNET Fine-tuning (Bird Pipeline)
+# BirdCLEF 2026 -- BirdNET Fine-tuning (Bird Pipeline)
 # =============================================================================
 # Backbone   : EfficientNet-B1 with BirdNET pretrained weights
 # Pretraining: BirdNET-Analyzer trained on 9,000+ bird species from XC + iNat
 # Why BirdNET : pretrained representations drastically help rare species (< 10 clips)
-# Fine-tuning : 2-phase — frozen backbone (5 ep) → full unfrozen (15 ep)
+# Fine-tuning : 2-phase -- frozen backbone (5 ep) -> full unfrozen (15 ep)
 # Loss        : BCEWithLogitsLoss (multi-label)
 # Folds       : GroupKFold by recorder site
 # =============================================================================
 #
 # To add BirdNET weights on Kaggle:
 #   1. Search Kaggle Datasets for 'birdnet-analyzer'
-#   2. Add to this notebook (settings → Add data)
+#   2. Add to this notebook (settings -> Add data)
 #   3. Weights will be at /kaggle/input/birdnet-analyzer-model/
 
 # %% [markdown]
-# # BirdCLEF 2026 — BirdNET Fine-tuning (Bird Pipeline)
+# # BirdCLEF 2026 -- BirdNET Fine-tuning (Bird Pipeline)
 #
 # BirdNET-Analyzer is a public EfficientNet-B1 pretrained specifically on
 # bird vocalisations (9,000+ species from Xeno-canto + iNaturalist). Its
 # feature representations are far stronger for bird audio than ImageNet
-# pretrained weights — especially for rare Pantanal species with < 10 clips.
+# pretrained weights -- especially for rare Pantanal species with < 10 clips.
 #
 # **2-phase strategy:**
-# 1. **Frozen backbone (5 epochs)** — train only the new 162-class head so it
+# 1. **Frozen backbone (5 epochs)** -- train only the new 162-class head so it
 #    converges before we touch the pretrained features
-# 2. **Full model (15 epochs)** — unfreeze everything with a 10× lower LR
+# 2. **Full model (15 epochs)** -- unfreeze everything with a 10x lower LR
 #    so the backbone adapts slowly and retains its strong bird representations
 
 # %%
-# ── Install / version pins ────────────────────────────────────────────────────
+# -- Install / version pins ----------------------------------------------------
 # !pip install -q timm==1.0.3  # uncomment on Kaggle if needed
 
 import os, gc, json, time, warnings
@@ -48,7 +48,7 @@ from torch.utils.data import Dataset, DataLoader
 import timm
 warnings.filterwarnings('ignore')
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# -- Paths ---------------------------------------------------------------------
 BASE_DIR      = (Path('/kaggle/input/competitions/birdclef-2026')
                  if Path('/kaggle/input/competitions/birdclef-2026').exists()
                  else Path('birdclef-2026'))
@@ -58,9 +58,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 NUM_WORKERS   = 0 if os.name == 'nt' else 4
 
 # %%
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 CFG = dict(
-    # Audio constants — identical across all notebooks
+    # Audio constants -- identical across all notebooks
     SR             = 32000,
     N_FFT          = 1024,
     HOP_LENGTH     = 320,
@@ -68,7 +68,7 @@ CFG = dict(
     FMIN           = 40,
     FMAX           = 15000,
     DURATION       = 5,         # inference clip length (seconds)
-    TRAIN_DURATION = 10,        # training clip — longer context
+    TRAIN_DURATION = 10,        # training clip -- longer context
     # Model
     MODEL_NAME     = 'efficientnet_b1',
     PRETRAINED     = False,     # we load BirdNET weights, not ImageNet
@@ -159,11 +159,11 @@ def load_birdnet_weights(model, birdnet_dir):
     weight_path = Path(birdnet_dir) / 'BirdNET_GLOBAL_6K_V2.4_Model.pt'
     if not weight_path.exists():
         print(f"  BirdNET weights not found at {weight_path}")
-        print("  → Add the 'birdnet-analyzer' dataset to this Kaggle notebook")
-        print("  → Falling back to random init (model will still train, just less effectively)")
+        print("  -> Add the 'birdnet-analyzer' dataset to this Kaggle notebook")
+        print("  -> Falling back to random init (model will still train, just less effectively)")
         return False
     state_dict = torch.load(weight_path, map_location='cpu')
-    # Drop classifier / head / fc layers — keep only the feature extractor
+    # Drop classifier / head / fc layers -- keep only the feature extractor
     filtered = {k: v for k, v in state_dict.items()
                 if not any(k.startswith(p) for p in ['classifier', 'head', 'fc'])}
     missing, unexpected = model.backbone.load_state_dict(filtered, strict=False)
@@ -376,8 +376,8 @@ for fold, (train_idx, val_idx) in enumerate(
     fold_hist = []
     ckpt_path = OUTPUT_DIR / f"birdnet_fold{fold}.pth"
 
-    # ── Phase 1: frozen backbone ──────────────────────────────────────────────
-    print(f"\n  Phase 1 — frozen backbone ({CFG['FREEZE_EPOCHS']} epochs)")
+    # -- Phase 1: frozen backbone ----------------------------------------------
+    print(f"\n  Phase 1 -- frozen backbone ({CFG['FREEZE_EPOCHS']} epochs)")
     set_backbone_frozen(model, frozen=True)
     optimizer_p1 = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -396,11 +396,11 @@ for fold, (train_idx, val_idx) in enumerate(
         if vl_auc > best_auc:
             best_auc = vl_auc
             torch.save(model.state_dict(), ckpt_path)
-            print(f"    ✓ saved (auc={best_auc:.4f})")
+            print(f"    OK saved (auc={best_auc:.4f})")
 
-    # ── Phase 2: full model ───────────────────────────────────────────────────
+    # -- Phase 2: full model ---------------------------------------------------
     remaining = CFG['EPOCHS'] - CFG['FREEZE_EPOCHS']
-    print(f"\n  Phase 2 — full model ({remaining} epochs)")
+    print(f"\n  Phase 2 -- full model ({remaining} epochs)")
     set_backbone_frozen(model, frozen=False)
     optimizer_p2 = torch.optim.AdamW(
         model.parameters(),
@@ -422,7 +422,7 @@ for fold, (train_idx, val_idx) in enumerate(
         if vl_auc > best_auc:
             best_auc = vl_auc
             torch.save(model.state_dict(), ckpt_path)
-            print(f"    ✓ saved (auc={best_auc:.4f})")
+            print(f"    OK saved (auc={best_auc:.4f})")
 
     # OOF predictions from best checkpoint
     model.load_state_dict(torch.load(ckpt_path, map_location=CFG['DEVICE']))
@@ -439,7 +439,7 @@ for fold, (train_idx, val_idx) in enumerate(
     torch.cuda.empty_cache(); gc.collect()
 
 print(f"\n{'='*60}")
-print(f"  CV AUC (birdnet): {np.mean(fold_aucs):.4f} ± {np.std(fold_aucs):.4f}")
+print(f"  CV AUC (birdnet): {np.mean(fold_aucs):.4f} ? {np.std(fold_aucs):.4f}")
 print(f"  Per-fold: {[round(a, 4) for a in fold_aucs]}")
 print(f"{'='*60}")
 
@@ -457,7 +457,7 @@ oof_results = {
 fname = OUTPUT_DIR / 'oof_birdnet.json'
 with open(fname, 'w') as f:
     json.dump(oof_results, f, indent=2)
-print(f"OOF results saved → {fname}")
+print(f"OOF results saved -> {fname}")
 print(json.dumps(oof_results, indent=2))
 
 # %%
@@ -483,17 +483,17 @@ for ax in axes:
     ax.axvline(x=CFG['FREEZE_EPOCHS'] + 0.5, color='grey',
                linestyle='--', alpha=0.7, label='phase boundary')
 
-axes[0].set_title('Validation BCE Loss — BirdNET fine-tune', fontweight='bold')
+axes[0].set_title('Validation BCE Loss -- BirdNET fine-tune', fontweight='bold')
 axes[0].set_xlabel('Epoch'); axes[0].set_ylabel('BCE Loss')
 axes[0].legend(fontsize=8)
-axes[1].set_title('Validation Macro ROC-AUC — BirdNET fine-tune', fontweight='bold')
+axes[1].set_title('Validation Macro ROC-AUC -- BirdNET fine-tune', fontweight='bold')
 axes[1].set_xlabel('Epoch'); axes[1].set_ylabel('AUC')
 axes[1].legend(fontsize=8)
 plt.tight_layout()
 plot_path = OUTPUT_DIR / 'training_curves_birdnet.png'
 plt.savefig(plot_path, bbox_inches='tight')
 plt.show()
-print(f"Plot saved → {plot_path}")
+print(f"Plot saved -> {plot_path}")
 
 # %%
 # %% [markdown]
@@ -509,7 +509,7 @@ print(f"Test soundscapes: {len(test_soundscapes)}")
 
 
 def predict_soundscape(audio_path, model, cfg, device):
-    """Slide 5s windows, return dict row_id → bird probability array."""
+    """Slide 5s windows, return dict row_id -> bird probability array."""
     try:
         y, _ = librosa.load(str(audio_path), sr=cfg['SR'], mono=True)
     except Exception as e:
@@ -545,7 +545,7 @@ all_fold_preds = []
 for fold in range(1, CFG['N_FOLDS'] + 1):
     ckpt = OUTPUT_DIR / f"birdnet_fold{fold}.pth"
     if not ckpt.exists():
-        print(f"  Checkpoint not found: {ckpt.name} — skipping")
+        print(f"  Checkpoint not found: {ckpt.name} -- skipping")
         continue
     inf_model = BirdModel(CFG['MODEL_NAME'], BIRD_CLASSES, pretrained=False)
     inf_model.load_state_dict(torch.load(ckpt, map_location=CFG['DEVICE']))
@@ -596,7 +596,7 @@ print(sub.head(2))
 # %% [markdown]
 # ## ONNX Export
 #
-# Export fold-1 checkpoint. 5s inference → 501 time frames.
+# Export fold-1 checkpoint. 5s inference -> 501 time frames.
 
 # %%
 try:
@@ -614,7 +614,7 @@ try:
             input_names=['input'], output_names=['output'],
             opset_version=11,
             dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}})
-        print(f"ONNX export successful → {onnx_path}")
+        print(f"ONNX export successful -> {onnx_path}")
         print(f"  Input shape : (batch, 1, {CFG['N_MELS']}, {n_frames})")
         print(f"  Output shape: (batch, {BIRD_CLASSES})")
     else:

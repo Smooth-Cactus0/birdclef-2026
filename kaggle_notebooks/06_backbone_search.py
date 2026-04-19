@@ -1,33 +1,33 @@
 # %%
 # =============================================================================
-# BirdCLEF 2026 — Backbone Search (Bird Pipeline)
+# BirdCLEF 2026 -- Backbone Search (Bird Pipeline)
 # =============================================================================
 # Change CFG['MODEL_NAME'] to swap backbones:
-#   'efficientnet_b1'   — lightweight upgrade from B0
-#   'efficientnet_b3'   — accuracy/speed sweet spot
-#   'efficientnet_b4'   — top accuracy in bird pipeline
-#   'regnety_016'       — architectural diversity
-#   'eca_nfnet_l0'      — strong regularization
-# Loss    : BCEWithLogitsLoss (multi-label — test chunks have multiple species)
+#   'efficientnet_b1'   -- lightweight upgrade from B0
+#   'efficientnet_b3'   -- accuracy/speed sweet spot
+#   'efficientnet_b4'   -- top accuracy in bird pipeline
+#   'regnety_016'       -- architectural diversity
+#   'eca_nfnet_l0'      -- strong regularization
+# Loss    : BCEWithLogitsLoss (multi-label -- test chunks have multiple species)
 # Folds   : GroupKFold by recorder site (honest CV)
 # Duration: 10s train / 5s inference (longer context helps per 2024 winners)
 # =============================================================================
 
 # %% [markdown]
-# # BirdCLEF 2026 — Backbone Search (Bird Pipeline)
+# # BirdCLEF 2026 -- Backbone Search (Bird Pipeline)
 #
 # This notebook trains a single backbone on 162 Aves species and evaluates it
 # with **GroupKFold** cross-validation grouped by recorder site. Run it 5 times
 # with different `CFG['MODEL_NAME']` values to compare backbones side-by-side.
 #
 # Key upgrades vs the B0 baseline (nb03):
-# - **BCE multi-label loss** — soundscape chunks often contain multiple species
-# - **GroupKFold by site** — prevents geographic leakage across folds
-# - **10s training clips** — longer context improves rare-species recall
-# - **Sample weighting** — down-weight low-quality XC and iNat recordings
+# - **BCE multi-label loss** -- soundscape chunks often contain multiple species
+# - **GroupKFold by site** -- prevents geographic leakage across folds
+# - **10s training clips** -- longer context improves rare-species recall
+# - **Sample weighting** -- down-weight low-quality XC and iNat recordings
 
 # %%
-# ── Install / version pins ────────────────────────────────────────────────────
+# -- Install / version pins ----------------------------------------------------
 # !pip install -q timm==1.0.3  # uncomment on Kaggle if needed
 
 import os, gc, json, time, warnings
@@ -45,7 +45,7 @@ from torch.utils.data import Dataset, DataLoader
 import timm
 warnings.filterwarnings('ignore')
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# -- Paths ---------------------------------------------------------------------
 BASE_DIR   = (Path('/kaggle/input/competitions/birdclef-2026')
               if Path('/kaggle/input/competitions/birdclef-2026').exists()
               else Path('birdclef-2026'))
@@ -54,9 +54,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 NUM_WORKERS = 0 if os.name == 'nt' else 4
 
 # %%
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 CFG = dict(
-    # Audio constants — keep identical across all notebooks
+    # Audio constants -- keep identical across all notebooks
     SR          = 32000,
     N_FFT       = 1024,
     HOP_LENGTH  = 320,
@@ -64,9 +64,9 @@ CFG = dict(
     FMIN        = 40,
     FMAX        = 15000,
     DURATION    = 5,           # inference clip length (seconds)
-    TRAIN_DURATION = 10,       # training clip — longer context per 2024 insight
-    # Model — change this per run to search backbones
-    MODEL_NAME  = 'efficientnet_b3',   # ← swap to try others
+    TRAIN_DURATION = 10,       # training clip -- longer context per 2024 insight
+    # Model -- change this per run to search backbones
+    MODEL_NAME  = 'efficientnet_b3',   # <- swap to try others
     PRETRAINED  = True,
     # Training
     N_FOLDS     = 5,
@@ -91,14 +91,14 @@ print(f"Backbone: {CFG['MODEL_NAME']}")
 # assign quality-based sample weights, and derive a `site` group for GroupKFold.
 
 # %%
-# ── Load metadata ─────────────────────────────────────────────────────────────
+# -- Load metadata -------------------------------------------------------------
 np.random.seed(CFG['SEED'])
 torch.manual_seed(CFG['SEED'])
 
 taxonomy   = pd.read_csv(BASE_DIR / 'taxonomy.csv')
 train_df   = pd.read_csv(BASE_DIR / 'train.csv')
 
-# Full 234-class label list (taxonomy order) — used for submission alignment
+# Full 234-class label list (taxonomy order) -- used for submission alignment
 label_list  = taxonomy['primary_label'].tolist()
 label2idx   = {l: i for i, l in enumerate(label_list)}
 NUM_CLASSES = len(label_list)   # 234
@@ -111,7 +111,7 @@ BIRD_CLASSES = len(bird_labels)  # 162
 print(f"Total taxonomy classes : {NUM_CLASSES}")
 print(f"Bird classes (Aves)    : {BIRD_CLASSES}")
 
-# ── Filter to bird-only clips ─────────────────────────────────────────────────
+# -- Filter to bird-only clips -------------------------------------------------
 train_df = train_df[train_df['primary_label'].isin(bird_labels)].copy()
 train_df['target']   = train_df['primary_label'].map(bird2idx)
 train_df['filepath'] = train_df['filename'].apply(
@@ -120,8 +120,8 @@ train_df['filepath'] = train_df['filename'].apply(
 print(f"Training clips (Aves) : {len(train_df):,}")
 print(train_df['class_name'].value_counts())
 
-# ── Sample weights by data quality ───────────────────────────────────────────
-# Gold=1.0, XC≥3.0=0.8, XC<3.0=0.5, iNat=0.4
+# -- Sample weights by data quality -------------------------------------------
+# Gold=1.0, XC>=3.0=0.8, XC<3.0=0.5, iNat=0.4
 # 'collection' column distinguishes XC vs iNat; 'rating' is XC quality score
 def get_sample_weight(row):
     collection = str(row.get('collection', 'XC')).lower()
@@ -136,7 +136,7 @@ train_df['weight'] = train_df.apply(get_sample_weight, axis=1)
 print("\nSample weight distribution:")
 print(train_df['weight'].value_counts().sort_index())
 
-# ── GroupKFold site grouping ──────────────────────────────────────────────────
+# -- GroupKFold site grouping --------------------------------------------------
 # Use recorder_id if available (from PAM soundscapes), else fall back to
 # primary_label as a proxy so clips from the same species stay in the same fold
 train_df['site'] = train_df.get('recorder_id', train_df['primary_label'])
@@ -148,7 +148,7 @@ print(f"\nUnique groups (sites/species): {train_df['site'].nunique()}")
 #
 # `BirdDataset` produces:
 # - **Input**: `(1, N_MELS, T)` log-mel spectrogram tensor
-# - **Target**: multi-hot vector of length `BIRD_CLASSES` — primary label = 1.0,
+# - **Target**: multi-hot vector of length `BIRD_CLASSES` -- primary label = 1.0,
 #   secondary labels = 0.5 (soft positives, still counted as positive in AUC)
 # - **Weight**: per-sample quality weight for the weighted BCE loss
 
@@ -241,7 +241,7 @@ class BirdDataset(Dataset):
 class BirdModel(nn.Module):
     """
     timm backbone accepting (B, 1, N_MELS, T) mel spectrograms.
-    Output: logits of shape (B, BIRD_CLASSES) — apply sigmoid for probabilities.
+    Output: logits of shape (B, BIRD_CLASSES) -- apply sigmoid for probabilities.
     """
     def __init__(self, model_name, num_classes, pretrained=True):
         super().__init__()
@@ -256,7 +256,7 @@ class BirdModel(nn.Module):
 # %% [markdown]
 # ## Training Functions
 #
-# `train_one_epoch` applies **weighted BCE** — each sample's loss is scaled by
+# `train_one_epoch` applies **weighted BCE** -- each sample's loss is scaled by
 # its quality weight so that high-confidence XC recordings guide the gradient
 # more than low-quality iNat clips.
 
@@ -362,7 +362,7 @@ for fold, (train_idx, val_idx) in enumerate(
         if vl_auc > best_auc:
             best_auc = vl_auc
             torch.save(model.state_dict(), ckpt_path)
-            print(f"    ✓ saved  {ckpt_path.name}  (auc={best_auc:.4f})")
+            print(f"    OK saved  {ckpt_path.name}  (auc={best_auc:.4f})")
 
     # OOF predictions from best checkpoint
     model.load_state_dict(torch.load(ckpt_path, map_location=CFG['DEVICE']))
@@ -380,7 +380,7 @@ for fold, (train_idx, val_idx) in enumerate(
 
 print(f"\n{'='*60}")
 print(f"  CV AUC ({CFG['MODEL_NAME']}): "
-      f"{np.mean(fold_aucs):.4f} ± {np.std(fold_aucs):.4f}")
+      f"{np.mean(fold_aucs):.4f} ? {np.std(fold_aucs):.4f}")
 print(f"  Per-fold : {[round(a, 4) for a in fold_aucs]}")
 print(f"{'='*60}")
 
@@ -398,7 +398,7 @@ oof_results = {
 fname = OUTPUT_DIR / f"oof_{CFG['MODEL_NAME']}.json"
 with open(fname, 'w') as f:
     json.dump(oof_results, f, indent=2)
-print(f"OOF results saved → {fname}")
+print(f"OOF results saved -> {fname}")
 print(json.dumps(oof_results, indent=2))
 
 # %%
@@ -416,17 +416,17 @@ for fld in hist_df['fold'].unique():
     axes[1].plot(fh['epoch'], fh['vl_auc'],  marker='o',
                  label=f'fold {fld}', markersize=4)
 
-axes[0].set_title(f'Validation BCE Loss — {CFG["MODEL_NAME"]}', fontweight='bold')
+axes[0].set_title(f'Validation BCE Loss -- {CFG["MODEL_NAME"]}', fontweight='bold')
 axes[0].set_xlabel('Epoch'); axes[0].set_ylabel('BCE Loss')
 axes[0].legend()
-axes[1].set_title(f'Validation Macro ROC-AUC — {CFG["MODEL_NAME"]}', fontweight='bold')
+axes[1].set_title(f'Validation Macro ROC-AUC -- {CFG["MODEL_NAME"]}', fontweight='bold')
 axes[1].set_xlabel('Epoch'); axes[1].set_ylabel('AUC')
 axes[1].legend()
 plt.tight_layout()
 plot_path = OUTPUT_DIR / f'training_curves_{CFG["MODEL_NAME"]}.png'
 plt.savefig(plot_path, bbox_inches='tight')
 plt.show()
-print(f"Plot saved → {plot_path}")
+print(f"Plot saved -> {plot_path}")
 
 # %%
 # %% [markdown]
@@ -434,7 +434,7 @@ print(f"Plot saved → {plot_path}")
 #
 # Slide 5s windows over each soundscape. This model predicts `BIRD_CLASSES`
 # (162) columns; non-bird columns are filled with the prior `1/NUM_CLASSES`.
-# Use **sigmoid** (not softmax) — matches the BCE training objective.
+# Use **sigmoid** (not softmax) -- matches the BCE training objective.
 
 # %%
 sample_sub       = pd.read_csv(BASE_DIR / 'sample_submission.csv')
@@ -445,7 +445,7 @@ print(f"Test soundscapes: {len(test_soundscapes)}")
 def predict_soundscape(audio_path, model, cfg, device):
     """
     Slide 5s windows over a long soundscape.
-    Returns dict: row_id → probability array (shape BIRD_CLASSES).
+    Returns dict: row_id -> probability array (shape BIRD_CLASSES).
     """
     try:
         y, _ = librosa.load(str(audio_path), sr=cfg['SR'], mono=True)
@@ -478,7 +478,7 @@ def predict_soundscape(audio_path, model, cfg, device):
 
     batch = torch.stack(chunks).to(device)
     with torch.no_grad():
-        # sigmoid (not softmax) — consistent with BCE training
+        # sigmoid (not softmax) -- consistent with BCE training
         probs = torch.sigmoid(model(batch)).cpu().numpy()
 
     return {rid: p for rid, p in zip(row_ids, probs)}
@@ -489,7 +489,7 @@ all_fold_preds = []
 for fold in range(1, CFG['N_FOLDS'] + 1):
     ckpt = OUTPUT_DIR / f"{CFG['MODEL_NAME']}_fold{fold}.pth"
     if not ckpt.exists():
-        print(f"  Checkpoint not found: {ckpt.name} — skipping")
+        print(f"  Checkpoint not found: {ckpt.name} -- skipping")
         continue
     inf_model = BirdModel(CFG['MODEL_NAME'], BIRD_CLASSES, pretrained=False)
     inf_model.load_state_dict(torch.load(ckpt, map_location=CFG['DEVICE']))
@@ -550,7 +550,7 @@ print(sub.head(2))
 #
 # Export the fold-1 checkpoint. Inference notebook (nb05) will convert this
 # to OpenVINO FP16 for the CPU budget.
-# Dummy input uses `DURATION=5` → 501 time frames.
+# Dummy input uses `DURATION=5` -> 501 time frames.
 
 # %%
 try:
@@ -568,7 +568,7 @@ try:
             input_names=['input'], output_names=['output'],
             opset_version=11,
             dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}})
-        print(f"ONNX export successful → {onnx_path}")
+        print(f"ONNX export successful -> {onnx_path}")
         print(f"  Input shape : (batch, 1, {CFG['N_MELS']}, {n_frames})")
         print(f"  Output shape: (batch, {BIRD_CLASSES})")
     else:

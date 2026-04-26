@@ -72,7 +72,7 @@ CFG = dict(
     # TRAIN_FOLDS: which folds to run. Default=[1] to fit in 9h Kaggle budget.
     # For full 5-fold CV run separate jobs: [2], [3], [4], [5].
     N_FOLDS     = 5,
-    TRAIN_FOLDS = [2],
+    TRAIN_FOLDS = [4],
     EPOCHS      = 10,
     BATCH_SIZE  = 32,
     LR          = 3e-4,

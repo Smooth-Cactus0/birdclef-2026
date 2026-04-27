@@ -28,12 +28,27 @@ warnings.filterwarnings('ignore')
 
 # %%
 # -- Paths ---------------------------------------------------------------------
+_input = Path('/kaggle/input')
+if not _input.exists():
+    print("/kaggle/input not found -- running locally")
+
 BASE_DIR  = (Path('/kaggle/input/competitions/birdclef-2026')
              if Path('/kaggle/input/competitions/birdclef-2026').exists()
              else Path('birdclef-2026'))
-CKPT_DIR  = (Path('/kaggle/input/birdclef26-checkpoints')
-             if Path('/kaggle/input/birdclef26-checkpoints').exists()
-             else Path('kaggle_outputs'))
+
+# Confirmed mount path: /kaggle/input/datasets/{owner}/{slug}/ on Kaggle 2025+
+# Fallback candidates for forward-compatibility
+_ckpt_candidates = [
+    Path('/kaggle/input/datasets/alexycactus/birdclef26-checkpoints'),
+    Path('/kaggle/input/birdclef26-checkpoints'),
+    Path('/kaggle/input/datasets/birdclef26-checkpoints'),
+]
+CKPT_DIR = Path('kaggle_outputs')  # local fallback
+for _c in _ckpt_candidates:
+    if _c.exists():
+        CKPT_DIR = _c
+        break
+
 OUTPUT_DIR = Path('/kaggle/working') if Path('/kaggle/working').exists() else Path('outputs')
 OUTPUT_DIR.mkdir(exist_ok=True)
 NUM_WORKERS = 0  # CPU submission kernel -- no workers needed

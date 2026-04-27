@@ -1,13 +1,15 @@
 {
-  "id": "alexycactus/birdclef-2026-backbone-b3-fold5",
-  "title": "BirdCLEF 2026 Backbone B3 Fold5",
-  "code_file": "06_b3_fold5.py",
+  "id": "alexycactus/birdclef-2026-inference-submission",
+  "title": "BirdCLEF 2026 Inference Submission",
+  "code_file": "12_inference_submission.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": "true",
-  "enable_gpu": "true",
-  "enable_internet": "true",
-  "dataset_sources": [],
+  "enable_gpu": "false",
+  "enable_internet": "false",
+  "dataset_sources": [
+    "alexycactus/birdclef26-checkpoints"
+  ],
   "competition_sources": [
     "birdclef-2026"
   ],

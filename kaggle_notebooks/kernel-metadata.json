@@ -1,6 +1,6 @@
 {
-  "id": "alexycactus/birdclef-2026-b3-fold5",
-  "title": "BirdCLEF 2026 B3 Fold5",
+  "id": "alexycactus/birdclef-2026-backbone-b3-fold5",
+  "title": "BirdCLEF 2026 Backbone B3 Fold5",
   "code_file": "06_b3_fold5.py",
   "language": "python",
   "kernel_type": "script",

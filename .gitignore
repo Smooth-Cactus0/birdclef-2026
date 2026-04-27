@@ -1,0 +1,20 @@
+# Competition data (large audio files)
+birdclef-2026/
+data/train_audio/
+data/test_soundscapes/
+data/unlabeled_soundscapes/
+data/train_soundscapes/
+
+# Model checkpoints and Kaggle outputs
+kaggle_outputs/
+outputs/
+*.pth
+*.onnx
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

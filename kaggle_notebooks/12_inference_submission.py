@@ -228,6 +228,16 @@ def accumulate_fold(fold_preds, new_preds):
 # %%
 sample_sub       = pd.read_csv(BASE_DIR / 'sample_submission.csv')
 test_soundscapes = sorted((BASE_DIR / 'test_soundscapes').glob('*.ogg'))
+
+# Staging fallback: test_soundscapes/ is empty in the preview env.
+# Use train_soundscapes so the pipeline can be validated end-to-end.
+# On real competition submission Kaggle populates test_soundscapes/ automatically.
+if len(test_soundscapes) == 0:
+    _train_sf = sorted((BASE_DIR / 'train_soundscapes').glob('*.ogg'))[:16]
+    if _train_sf:
+        print("NOTE: test_soundscapes empty -- using first 16 train_soundscapes for staging")
+        test_soundscapes = _train_sf
+
 print(f"Test soundscapes : {len(test_soundscapes)}")
 print(f"Expected rows    : {len(sample_sub)}")
 
@@ -345,8 +355,15 @@ pred_df           = pd.DataFrame.from_dict(rows, orient='index', columns=label_l
 pred_df.index.name = 'row_id'
 pred_df           = pred_df.reset_index()
 
-sub = sample_sub[['row_id']].merge(pred_df, on='row_id', how='left')
-sub[label_list] = sub[label_list].fillna(prior)
+# On real submission: left-join on sample_sub to guarantee correct row order/set.
+# In staging with train-soundscape fallback: pred_df rows won't match the 3-row
+# dummy sample_sub, so write pred_df directly so the output is non-trivial.
+if set(pred_df['row_id']).issubset(set(sample_sub['row_id'])) or len(sample_sub) > 10:
+    sub = sample_sub[['row_id']].merge(pred_df, on='row_id', how='left')
+    sub[label_list] = sub[label_list].fillna(prior)
+else:
+    # Staging fallback path: just output whatever we predicted
+    sub = pred_df
 
 sub.to_csv(OUTPUT_DIR / 'submission.csv', index=False)
 

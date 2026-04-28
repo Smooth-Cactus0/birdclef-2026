@@ -18,6 +18,7 @@
 
 # %%
 import os, gc, json, time, warnings
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -68,10 +69,14 @@ HOP_LENGTH = 320
 N_MELS     = 128
 FMIN       = 40
 FMAX       = 15000
-DURATION   = 5       # seconds per inference chunk
-N_SAMPLES  = SR * DURATION
-BATCH_SIZE = 32      # larger batch = higher CPU utilisation
-DEVICE     = 'cpu'   # submission kernel is CPU-only
+DURATION     = 5       # seconds per inference chunk
+N_SAMPLES    = SR * DURATION
+BATCH_SIZE   = 32      # larger batch = higher CPU utilisation
+DEVICE       = 'cpu'   # submission kernel is CPU-only
+LOAD_WORKERS = 4       # parallel soundscape loading (ThreadPoolExecutor)
+# Limit folds used per pipeline -- set to 5 once timing is confirmed OK
+BIRD_FOLDS_TO_USE    = [1]   # start with 1 fold to stay within time budget
+NONBIRD_FOLDS_TO_USE = [1]
 
 # Mel transform built once -- matches librosa params used in training
 # norm='slaney' + mel_scale='slaney' replicates librosa's default filter bank
@@ -228,18 +233,21 @@ print(f"Expected rows    : {len(sample_sub)}")
 
 t_start = time.time()
 
-# Pre-chunk all soundscapes once (avoid re-loading per model)
-print("\nChunking soundscapes...")
-all_chunks = {}   # {filepath: [(row_id, mel_tensor), ...]}
+# Pre-chunk all soundscapes in parallel (ThreadPoolExecutor matches baseline approach)
+print(f"\nChunking {len(test_soundscapes)} soundscapes with {LOAD_WORKERS} workers...")
+all_chunks = {}
 total_chunks = 0
-for sf in test_soundscapes:
-    chunks = chunk_soundscape(sf)
-    if chunks:
-        all_chunks[str(sf)] = chunks
-        total_chunks += len(chunks)
-    print(f"  {sf.name}: {len(chunks)} chunks")
 
-print(f"\nTotal chunks: {total_chunks}")
+def _chunk_worker(sf):
+    return str(sf), chunk_soundscape(sf)
+
+with ThreadPoolExecutor(max_workers=LOAD_WORKERS) as pool:
+    for sf_path, chunks in pool.map(_chunk_worker, test_soundscapes):
+        if chunks:
+            all_chunks[sf_path] = chunks
+            total_chunks += len(chunks)
+
+print(f"Total chunks: {total_chunks}")
 print(f"Chunking time: {time.time()-t_start:.1f}s")
 
 # %%
@@ -250,7 +258,7 @@ print(f"Chunking time: {time.time()-t_start:.1f}s")
 bird_sum   = {}   # running sum across folds
 bird_folds = 0
 
-for fold in range(1, 6):
+for fold in BIRD_FOLDS_TO_USE:
     ckpt = CKPT_DIR / f'efficientnet_b3_fold{fold}.pth'
     model = load_model(ckpt, 'efficientnet_b3', BIRD_CLASSES)
     if model is None:
@@ -271,7 +279,6 @@ for fold in range(1, 6):
 
     del model; gc.collect()
 
-# Average across folds
 bird_avg = {rid: p / bird_folds for rid, p in bird_sum.items()} if bird_folds > 0 else {}
 print(f"\nBird folds used: {bird_folds}")
 print(f"Time so far    : {time.time()-t_start:.1f}s")
@@ -284,7 +291,7 @@ print(f"Time so far    : {time.time()-t_start:.1f}s")
 nonbird_sum   = {}
 nonbird_folds = 0
 
-for fold in range(1, 6):
+for fold in NONBIRD_FOLDS_TO_USE:
     ckpt  = CKPT_DIR / f'nonbird_fold{fold}.pth'
     model = load_model(ckpt, 'eca_nfnet_l0', NONBIRD_CLASSES)
     if model is None:

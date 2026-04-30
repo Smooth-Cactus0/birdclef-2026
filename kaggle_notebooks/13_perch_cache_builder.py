@@ -139,7 +139,7 @@ def parse_fname(fname):
 # -- Competition data ---------------------------------------------------------
 taxonomy          = pd.read_csv(BASE_DIR / "taxonomy.csv")
 soundscape_labels = pd.read_csv(BASE_DIR / "train_soundscapes_labels.csv")
-train_meta        = pd.read_csv(BASE_DIR / "train_metadata.csv")
+train_meta        = pd.read_csv(BASE_DIR / "train.csv")
 sample_sub        = pd.read_csv(BASE_DIR / "sample_submission.csv")
 
 PRIMARY_LABELS = sample_sub.columns[1:].tolist()

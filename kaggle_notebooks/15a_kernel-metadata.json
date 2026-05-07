@@ -1,0 +1,20 @@
+{
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "rishikeshjani/perch-onnx-for-birdclef-2026"
+  ],
+  "competition_sources": [
+    "birdclef-2026"
+  ],
+  "kernel_sources": [],
+  "model_sources": [
+    "google/bird-vocalization-classifier/tensorflow2/perch_v2_cpu/1"
+  ],
+  "id": "alexycactus/birdclef-2026-logit-cls-blend",
+  "title": "BirdCLEF 2026 Logit Class Blend",
+  "code_file": "15a_logit_cls_blend.py"
+}

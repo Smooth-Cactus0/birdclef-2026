@@ -1,7 +1,7 @@
 {
-  "id": "alexycactus/birdclef-2026-perch-cache-builder",
-  "title": "BirdCLEF 2026 Perch Cache Builder",
-  "code_file": "13_perch_cache_builder.py",
+  "id": "alexycactus/birdclef-2026-perch-mlp-baseline",
+  "title": "BirdCLEF 2026 Perch MLP Baseline",
+  "code_file": "13_perch_mlp_baseline.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": "true",

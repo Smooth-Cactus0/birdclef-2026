@@ -1,0 +1,753 @@
+# %%
+# ============================================================================
+# BirdCLEF 2026 -- nb14b: Self-Attention Temporal Context + MLP Probes (Replace)
+# ============================================================================
+# Architecture (Option A -- replace temporal scalars with learned attention context):
+#   Same pipeline as nb14a but temporal model is 1-layer self-attention
+#   instead of BiGRU. All other cells (data, MLP, training, diagnostics) identical.
+#
+#   1. Perch v2 ONNX: extract embeddings + logits on 66 labeled soundscapes
+#   2. PCA(64): compress 1536-dim embeddings
+#   3. File sequence matrix: (n_files, 12, 64) PCA embeddings ordered per file
+#   4. Self-attention (d_model=64, nhead=4): learns context -> (n_files, 12, 5)
+#   5. VectorizedMLP: 234 probes on [PCA(64) | ctx(5)] = 69-dim
+#   6. Joint training end-to-end
+#   7. Alpha-blend with Perch sigmoid
+#
+# Extra diagnostic vs nb14a:
+#   - Attention weight heatmap (12x12, avg across files) saved as attn_weights_nb14b.png
+#
+# Inputs:
+#   - competitions/birdclef-2026
+#   - models/google/bird-vocalization-classifier/.../perch_v2_cpu/1
+#   - datasets/rishikeshjani/perch-onnx-for-birdclef-2026
+#
+# Internet : ON  (onnxruntime wheel install)
+# Compute  : CPU (~3 min Perch extract + ~5 min training + test Perch)
+# ============================================================================
+
+# %%
+# -- Step 0: Install onnxruntime ----------------------------------------------
+import glob as _glob
+import subprocess as _sub
+import sys as _sys
+
+_whl = [w for w in _glob.glob("/kaggle/input/**/onnxruntime*cp312*x86_64*.whl",
+                              recursive=True) if "gpu" not in w]
+if _whl:
+    print(f"Installing onnxruntime: {_whl[0]}")
+    _sub.check_call([_sys.executable, "-m", "pip", "install", _whl[0], "--quiet"])
+else:
+    print("No bundled wheel; falling back to PyPI")
+    _sub.check_call([_sys.executable, "-m", "pip", "install", "onnxruntime", "--quiet"])
+
+# %%
+import gc
+import json
+import math
+import re
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchaudio
+import onnxruntime as ort
+from sklearn.decomposition import PCA
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import GroupKFold
+
+warnings.filterwarnings("ignore")
+torch.set_num_threads(4)
+
+print(f"torch       : {torch.__version__}")
+print(f"torchaudio  : {torchaudio.__version__}")
+print(f"onnxruntime : {ort.__version__}")
+
+# %%
+# -- Paths --------------------------------------------------------------------
+BASE_DIR = (Path("/kaggle/input/competitions/birdclef-2026")
+            if Path("/kaggle/input/competitions/birdclef-2026").exists()
+            else Path("/kaggle/input/birdclef-2026"))
+
+MODEL_DIR = Path(
+    "/kaggle/input/models/google/bird-vocalization-classifier"
+    "/tensorflow2/perch_v2_cpu/1"
+)
+
+_onnx_candidates = [
+    Path("/kaggle/input/datasets/rishikeshjani/perch-onnx-for-birdclef-2026/perch_v2.onnx"),
+    Path("/kaggle/input/perch-onnx-for-birdclef-2026/perch_v2.onnx"),
+]
+ONNX_PATH = next((p for p in _onnx_candidates if p.exists()), None)
+
+OUT_DIR = Path("/kaggle/working")
+OUT_DIR.mkdir(exist_ok=True)
+
+print(f"BASE_DIR  : {BASE_DIR}   exists={BASE_DIR.exists()}")
+print(f"MODEL_DIR : {MODEL_DIR}  exists={MODEL_DIR.exists()}")
+print(f"ONNX_PATH : {ONNX_PATH}  found={ONNX_PATH is not None}")
+
+# %%
+# -- Constants ----------------------------------------------------------------
+PERCH_SR       = 32_000
+WINDOW_SEC     = 5
+WINDOW_SAMPLES = PERCH_SR * WINDOW_SEC
+SC_FILE_SEC    = 60
+SC_N_WINDOWS   = SC_FILE_SEC // WINDOW_SEC   # 12
+
+BATCH_FILES_TRAIN = 16
+BATCH_FILES_TEST  = 8
+IO_WORKERS        = 4
+
+PCA_DIM    = 64
+ATTN_DIM   = 64    # d_model for self-attention (matches PCA_DIM -> no input projection needed)
+ATTN_HEADS = 4
+ATTN_FF    = 128   # feedforward dim inside transformer layer
+CTX_DIM    = 5     # output context dim (same as nb13 temporal scalars)
+ATTN_DROP  = 0.1
+
+N_FOLDS   = 5
+EPOCHS    = 30
+LR        = 1e-3
+WD        = 1e-4
+BATCH_SZ  = 128
+ALPHA     = 0.7
+
+FNAME_RE = re.compile(r"BC2026_(?:Train|Test)_(\d+)_(S\d+)_(\d{8})_(\d{6})\.ogg")
+
+def parse_fname(name):
+    m = FNAME_RE.match(Path(name).name)
+    if m:
+        return {"site": m.group(2), "hour_utc": int(m.group(4)[:2])}
+    return {"site": "unknown", "hour_utc": -1}
+
+# %%
+# -- Load competition data ----------------------------------------------------
+taxonomy   = pd.read_csv(BASE_DIR / "taxonomy.csv")
+sc_labels  = pd.read_csv(BASE_DIR / "train_soundscapes_labels.csv")
+sample_sub = pd.read_csv(BASE_DIR / "sample_submission.csv")
+
+PRIMARY_LABELS = sample_sub.columns[1:].tolist()
+N_CLASSES      = len(PRIMARY_LABELS)
+label_to_idx   = {c: i for i, c in enumerate(PRIMARY_LABELS)}
+
+print(f"Classes        : {N_CLASSES}")
+print(f"Soundscape rows: {len(sc_labels)}")
+
+# %%
+# -- Build per-window label matrix --------------------------------------------
+def union_labels(series):
+    out = set()
+    for x in series:
+        if pd.notna(x):
+            for t in str(x).split(";"):
+                t = t.strip()
+                if t:
+                    out.add(t)
+    return sorted(out)
+
+sc = (sc_labels
+      .groupby(["filename", "start", "end"])["primary_label"]
+      .apply(union_labels)
+      .reset_index(name="label_list"))
+sc["end_sec"] = pd.to_timedelta(sc["end"]).dt.total_seconds().astype(int)
+sc["row_id"]  = (sc["filename"].str.replace(".ogg", "", regex=False)
+                 + "_" + sc["end_sec"].astype(str))
+
+Y_SC_LOOKUP = {}
+for _, row in sc.iterrows():
+    v = np.zeros(N_CLASSES, dtype=np.float32)
+    for lbl in row["label_list"]:
+        if lbl in label_to_idx:
+            v[label_to_idx[lbl]] = 1.0
+    Y_SC_LOOKUP[row["row_id"]] = v
+
+print(f"Labeled windows : {len(sc)}")
+print(f"Files in labels : {sc['filename'].nunique()}")
+
+# %%
+# -- ONNX session -------------------------------------------------------------
+assert ONNX_PATH is not None, "Perch ONNX not found"
+_so = ort.SessionOptions()
+_so.intra_op_num_threads = 4
+_so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+SESS = ort.InferenceSession(str(ONNX_PATH), sess_options=_so,
+                            providers=["CPUExecutionProvider"])
+ONNX_INPUT   = SESS.get_inputs()[0].name
+ONNX_OUT_MAP = {o.name: i for i, o in enumerate(SESS.get_outputs())}
+print(f"ONNX outputs: {list(ONNX_OUT_MAP.keys())}")
+
+# %%
+# -- Species mapping ----------------------------------------------------------
+BC_LABELS_CSV = MODEL_DIR / "assets" / "labels.csv"
+bc_labels = pd.read_csv(BC_LABELS_CSV).reset_index().rename(columns={"index": "bc_index"})
+_sci_col  = [c for c in bc_labels.columns if c != "bc_index"][0]
+bc_labels = bc_labels.rename(columns={_sci_col: "scientific_name"})
+NO_LABEL  = len(bc_labels)
+
+mapping = (taxonomy
+           .merge(bc_labels[["bc_index", "scientific_name"]],
+                  on="scientific_name", how="left"))
+mapping["bc_index"] = mapping["bc_index"].fillna(NO_LABEL).astype(int)
+lbl2bc = mapping.set_index("primary_label")["bc_index"]
+
+BC_INDICES    = np.array([int(lbl2bc.get(c, NO_LABEL)) for c in PRIMARY_LABELS], dtype=np.int32)
+MAPPED_MASK   = BC_INDICES != NO_LABEL
+MAPPED_POS    = np.where(MAPPED_MASK)[0].astype(np.int32)
+MAPPED_BC_IDX = BC_INDICES[MAPPED_MASK].astype(np.int32)
+UNMAPPED_POS  = np.where(~MAPPED_MASK)[0].astype(np.int32)
+
+CLASS_NAME_MAP = taxonomy.set_index("primary_label")["class_name"].to_dict()
+SCI_NAME_MAP   = taxonomy.set_index("primary_label")["scientific_name"].to_dict()
+PROXY_TAXA     = {"Amphibia", "Insecta", "Aves"}
+
+proxy_map = {}
+for lbl in [PRIMARY_LABELS[i] for i in UNMAPPED_POS]:
+    if CLASS_NAME_MAP.get(lbl) not in PROXY_TAXA:
+        continue
+    sci   = str(SCI_NAME_MAP.get(lbl, ""))
+    genus = sci.split()[0] if sci else ""
+    if not genus:
+        continue
+    hits = bc_labels[bc_labels["scientific_name"].astype(str)
+                     .str.match(rf"^{re.escape(genus)}\s", na=False)]
+    if len(hits):
+        proxy_map[label_to_idx[lbl]] = hits["bc_index"].astype(int).tolist()
+
+HAS_PERCH_SIGNAL = MAPPED_MASK.copy()
+for idx in proxy_map:
+    HAS_PERCH_SIGNAL[idx] = True
+alpha_per_class = np.where(HAS_PERCH_SIGNAL, ALPHA, 1.0).astype(np.float32)
+
+print(f"Mapped: {MAPPED_MASK.sum()} / {N_CLASSES}  proxy: {len(proxy_map)}")
+
+# %%
+# -- Audio + ONNX helpers -----------------------------------------------------
+def load_audio_60s(path, target_sec=SC_FILE_SEC):
+    try:
+        wav, sr = torchaudio.load(str(path))
+        if sr != PERCH_SR:
+            wav = torchaudio.functional.resample(wav, sr, PERCH_SR)
+        if wav.shape[0] > 1:
+            wav = wav.mean(0, keepdim=True)
+        y = wav.squeeze(0).numpy()
+    except Exception as e:
+        print(f"  load error {Path(path).name}: {e}")
+        return np.zeros(target_sec * PERCH_SR, dtype=np.float32)
+    target = target_sec * PERCH_SR
+    if len(y) < target:
+        y = np.pad(y, (0, target - len(y)))
+    else:
+        y = y[:target]
+    return y.astype(np.float32)
+
+
+def perch_infer(batch_np):
+    outs   = SESS.run(None, {ONNX_INPUT: batch_np})
+    logits = outs[ONNX_OUT_MAP["label"]].astype(np.float32)
+    embs   = outs[ONNX_OUT_MAP["embedding"]].astype(np.float32)
+    return logits, embs
+
+
+def project_logits(logits):
+    out = np.zeros((len(logits), N_CLASSES), dtype=np.float32)
+    out[:, MAPPED_POS] = logits[:, MAPPED_BC_IDX]
+    for pos_idx, bc_idxs in proxy_map.items():
+        out[:, pos_idx] = logits[:, np.array(bc_idxs, dtype=np.int32)].max(axis=1)
+    return out
+
+
+def extract_perch_60s_files(file_paths, batch_files, label="train"):
+    n_files = len(file_paths)
+    n_rows  = n_files * SC_N_WINDOWS
+    scores_all = np.zeros((n_rows, N_CLASSES), dtype=np.float32)
+    embs_all   = np.zeros((n_rows, 1536),      dtype=np.float32)
+    meta_rows  = []
+    wr = 0
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=IO_WORKERS) as pool:
+        future = pool.submit(lambda ps: [load_audio_60s(p) for p in ps],
+                             file_paths[:batch_files])
+        for start in range(0, n_files, batch_files):
+            batch_paths = file_paths[start:start + batch_files]
+            batch_audio = future.result()
+            nxt = start + batch_files
+            if nxt < n_files:
+                future = pool.submit(
+                    lambda ps: [load_audio_60s(p) for p in ps],
+                    file_paths[nxt:nxt + batch_files]
+                )
+            batch_n = len(batch_audio)
+            x = np.stack([a.reshape(SC_N_WINDOWS, WINDOW_SAMPLES) for a in batch_audio])
+            x = x.reshape(-1, WINDOW_SAMPLES)
+            logits, embs = perch_infer(x)
+            scores = project_logits(logits)
+            for bi, path in enumerate(batch_paths):
+                meta = parse_fname(path.name)
+                for wi in range(SC_N_WINDOWS):
+                    end_s = (wi + 1) * WINDOW_SEC
+                    meta_rows.append({
+                        "filename"  : path.name,
+                        "window_idx": wi,
+                        "end_sec"   : end_s,
+                        "row_id"    : f"{path.stem}_{end_s}",
+                        "site"      : meta["site"],
+                        "hour_utc"  : meta["hour_utc"],
+                    })
+            rows_this = batch_n * SC_N_WINDOWS
+            scores_all[wr:wr + rows_this] = scores
+            embs_all  [wr:wr + rows_this] = embs
+            wr += rows_this
+            print(f"  {label}: {wr}/{n_rows} windows  {time.time()-t0:.0f}s", end="\r")
+    print(f"\n  {label} done: {wr} windows in {time.time()-t0:.1f}s")
+    return pd.DataFrame(meta_rows), scores_all[:wr], embs_all[:wr]
+
+# %%
+# -- Extract Perch on labeled train_soundscapes --------------------------------
+labeled_fnames = set(sc_labels["filename"].unique())
+train_files = sorted([
+    f for f in (BASE_DIR / "train_soundscapes").glob("*.ogg")
+    if f.name in labeled_fnames
+])
+print(f"Extracting Perch on {len(train_files)} labeled soundscapes ...")
+meta_tr, scores_tr, embs_tr = extract_perch_60s_files(
+    train_files, BATCH_FILES_TRAIN, label="train")
+
+perch_sig_tr = (1.0 / (1.0 + np.exp(-scores_tr))).astype(np.float32)
+
+# %%
+# -- Align labels -------------------------------------------------------------
+Y_TR = np.stack([
+    Y_SC_LOOKUP.get(rid, np.zeros(N_CLASSES, dtype=np.float32))
+    for rid in meta_tr["row_id"]
+])
+labeled_count = int((Y_TR.sum(1) > 0).sum())
+print(f"Labeled windows: {labeled_count} / {len(Y_TR)}")
+assert labeled_count >= 600, f"Alignment broken: only {labeled_count} labeled windows"
+
+# %%
+# -- PCA ----------------------------------------------------------------------
+print(f"Fitting PCA({PCA_DIM}) on {embs_tr.shape} ...")
+pca    = PCA(n_components=PCA_DIM, random_state=42).fit(embs_tr)
+pca_tr = pca.transform(embs_tr).astype(np.float32)
+print(f"PCA variance retained: {pca.explained_variance_ratio_.sum():.4f}")
+
+del embs_tr
+gc.collect()
+
+# %%
+# -- File sequence matrix: (n_files, 12, 64) ----------------------------------
+train_fnames_ord = sorted(meta_tr["filename"].unique())
+fname_to_fidx    = {f: i for i, f in enumerate(train_fnames_ord)}
+
+file_idx_tr   = meta_tr["filename"].map(fname_to_fidx).to_numpy(dtype=np.int32)
+window_idx_tr = meta_tr["window_idx"].to_numpy(dtype=np.int32)
+
+n_train_files = len(train_fnames_ord)
+file_seq_np   = np.zeros((n_train_files, SC_N_WINDOWS, PCA_DIM), dtype=np.float32)
+for row_i in range(len(pca_tr)):
+    file_seq_np[file_idx_tr[row_i], window_idx_tr[row_i]] = pca_tr[row_i]
+
+file_seq_tensor = torch.from_numpy(file_seq_np).float()
+print(f"File sequence tensor: {file_seq_tensor.shape}")
+
+# %%
+# -- Model definitions --------------------------------------------------------
+
+class SinusoidalPE(nn.Module):
+    """Fixed sinusoidal positional encoding for sequence length up to max_len."""
+    def __init__(self, d_model, max_len=12):
+        super().__init__()
+        pe  = torch.zeros(max_len, d_model)
+        pos = torch.arange(max_len).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, d_model, 2).float()
+                        * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe.unsqueeze(0))   # (1, max_len, d_model)
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+
+
+class SelfAttentionContext(nn.Module):
+    """1-layer Transformer encoder over 12-window file sequence -> (12, CTX_DIM).
+
+    Saves last_attn_weights (B_files, 12, 12) when return_attn=True is passed
+    to forward. Used for the attention heatmap diagnostic.
+    """
+    def __init__(self, d_model=ATTN_DIM, nhead=ATTN_HEADS, ff_dim=ATTN_FF,
+                 out_dim=CTX_DIM, dropout=ATTN_DROP):
+        super().__init__()
+        self.pe    = SinusoidalPE(d_model, max_len=SC_N_WINDOWS)
+        self.attn  = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.ff    = nn.Sequential(
+            nn.Linear(d_model, ff_dim), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(ff_dim, d_model),
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.proj  = nn.Linear(d_model, out_dim)
+        self.last_attn_weights = None   # (n_files, 12, 12) averaged across heads
+
+    def forward(self, seq, return_attn=False):
+        # seq: (B_files, 12, d_model)
+        x = self.pe(seq)
+        # average_attn_weights=True returns (B_files, 12, 12) averaged over heads
+        attn_out, attn_w = self.attn(x, x, x,
+                                     need_weights=return_attn,
+                                     average_attn_weights=True)
+        if return_attn:
+            self.last_attn_weights = attn_w.detach().cpu()
+        x = self.norm1(x + attn_out)
+        x = self.norm2(x + self.ff(x))
+        return self.proj(x)   # (B_files, 12, CTX_DIM)
+
+
+class VectorizedMLP(nn.Module):
+    """234 separate (PCA_DIM+CTX_DIM -> 128 -> 64 -> 1) probes via bmm."""
+    def __init__(self, n_cls=N_CLASSES, in_dim=PCA_DIM + CTX_DIM, h1=128, h2=64):
+        super().__init__()
+        self.W1 = nn.Parameter(torch.randn(n_cls, in_dim, h1) * (2.0 / in_dim) ** 0.5)
+        self.b1 = nn.Parameter(torch.zeros(n_cls, 1, h1))
+        self.W2 = nn.Parameter(torch.randn(n_cls, h1, h2) * (2.0 / h1) ** 0.5)
+        self.b2 = nn.Parameter(torch.zeros(n_cls, 1, h2))
+        self.W3 = nn.Parameter(torch.randn(n_cls, h2, 1) * (2.0 / h2) ** 0.5)
+        self.b3 = nn.Parameter(torch.zeros(n_cls, 1, 1))
+
+    def forward(self, x):
+        x = x.permute(1, 0, 2)
+        h = F.relu(torch.bmm(x,  self.W1) + self.b1)
+        h = F.relu(torch.bmm(h,  self.W2) + self.b2)
+        return (torch.bmm(h, self.W3) + self.b3).squeeze(-1).t()
+
+# %%
+# -- Training utilities -------------------------------------------------------
+
+def get_context(attn_model, fids, wids, seq_tensor):
+    """Run attention on unique files; return per-window context (B, CTX_DIM)."""
+    unique_fids, inverse = torch.unique(fids, return_inverse=True)
+    ctx_out = attn_model(seq_tensor[unique_fids])   # (n_unique, 12, CTX_DIM)
+    return ctx_out[inverse, wids]                   # (B, CTX_DIM)
+
+
+def build_mlp_input(pca_b, ctx):
+    B = pca_b.shape[0]
+    p = pca_b.unsqueeze(1).expand(B, N_CLASSES, PCA_DIM)
+    c = ctx.unsqueeze(1).expand(B, N_CLASSES, CTX_DIM)
+    return torch.cat([p, c], dim=-1)
+
+
+def train_one_fold(pca_tr_f, Y_tr_f, fids_tr_f, wids_tr_f,
+                   pca_va_f, Y_va_f, fids_va_f, wids_va_f,
+                   seq_tensor, n_epochs=EPOCHS, batch_size=BATCH_SZ, verbose=False):
+
+    Xp_tr = torch.from_numpy(pca_tr_f).float()
+    Yt_tr = torch.from_numpy(Y_tr_f).float()
+    fids_tr_t = torch.from_numpy(fids_tr_f).long()
+    wids_tr_t = torch.from_numpy(wids_tr_f).long()
+
+    Xp_va = torch.from_numpy(pca_va_f).float()
+    Yt_va = torch.from_numpy(Y_va_f).float()
+    fids_va_t = torch.from_numpy(fids_va_f).long()
+    wids_va_t = torch.from_numpy(wids_va_f).long()
+
+    attn  = SelfAttentionContext()
+    mlp   = VectorizedMLP()
+    opt   = torch.optim.Adam(
+        list(attn.parameters()) + list(mlp.parameters()), lr=LR, weight_decay=WD)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_epochs, eta_min=1e-5)
+    bce   = nn.BCEWithLogitsLoss(reduction="none")
+    cls_w = torch.tensor(1.0 / np.sqrt(Y_tr_f.sum(0) + 1.0), dtype=torch.float32)
+
+    n_tr = len(Xp_tr)
+    for ep in range(n_epochs):
+        attn.train(); mlp.train()
+        perm = torch.randperm(n_tr)
+        ep_loss = 0.0; n_batches = 0
+        for i in range(0, n_tr, batch_size):
+            idx   = perm[i:i + batch_size]
+            xp_b  = Xp_tr[idx]; yb = Yt_tr[idx]
+            fid_b = fids_tr_t[idx]; wid_b = wids_tr_t[idx]
+            opt.zero_grad()
+            ctx    = get_context(attn, fid_b, wid_b, seq_tensor)
+            logits = mlp(build_mlp_input(xp_b, ctx))
+            loss   = (bce(logits, yb) * cls_w).mean()
+            loss.backward()
+            opt.step()
+            ep_loss += loss.item(); n_batches += 1
+        sched.step()
+        if verbose and ((ep + 1) % 10 == 0 or ep == 0):
+            attn.eval(); mlp.eval()
+            with torch.no_grad():
+                ctx_va = get_context(attn, fids_va_t, wids_va_t, seq_tensor)
+                vl = (bce(mlp(build_mlp_input(Xp_va, ctx_va)), Yt_va) * cls_w).mean().item()
+            print(f"    ep {ep+1:3d}  train={ep_loss/n_batches:.4f}  val_loss={vl:.4f}")
+
+    attn.eval(); mlp.eval()
+    with torch.no_grad():
+        ctx_va      = get_context(attn, fids_va_t, wids_va_t, seq_tensor)
+        val_pred_on = torch.sigmoid(mlp(build_mlp_input(Xp_va, ctx_va))).numpy()
+        ctx_zero    = torch.zeros(len(Xp_va), CTX_DIM)
+        val_pred_off = torch.sigmoid(mlp(build_mlp_input(Xp_va, ctx_zero))).numpy()
+
+    return attn, mlp, val_pred_on, val_pred_off
+
+# %%
+# -- 5-fold GroupKFold by filename --------------------------------------------
+groups  = meta_tr["filename"].to_numpy()
+gkf     = GroupKFold(n_splits=N_FOLDS)
+oof_on  = np.zeros_like(Y_TR)
+oof_off = np.zeros_like(Y_TR)
+fold_models = []
+
+print(f"\nTraining {N_FOLDS}-fold Attention+MLP on {len(pca_tr)} windows ...")
+for fold, (tr_idx, va_idx) in enumerate(gkf.split(pca_tr, Y_TR, groups)):
+    t0 = time.time()
+    attn, mlp, vp_on, vp_off = train_one_fold(
+        pca_tr[tr_idx],       Y_TR[tr_idx],
+        file_idx_tr[tr_idx],  window_idx_tr[tr_idx],
+        pca_tr[va_idx],       Y_TR[va_idx],
+        file_idx_tr[va_idx],  window_idx_tr[va_idx],
+        file_seq_tensor,
+        verbose=(fold == 0),
+    )
+    oof_on [va_idx] = vp_on
+    oof_off[va_idx] = vp_off
+    val_active = Y_TR[va_idx].sum(0) > 0
+    try:
+        auc = roc_auc_score(Y_TR[va_idx][:, val_active],
+                            vp_on[:, val_active], average="macro")
+    except Exception:
+        auc = float("nan")
+    print(f"  fold {fold} | n_tr={len(tr_idx)} n_va={len(va_idx)} | "
+          f"active={int(val_active.sum())} | AUC_on={auc:.4f} | {time.time()-t0:.1f}s")
+    fold_models.append((attn, mlp))
+
+# %%
+# -- Diagnostic 1: Per-class AUC table ----------------------------------------
+active_mask = Y_TR.sum(0) > 0
+active_idxs = np.where(active_mask)[0]
+
+per_class_rows = []
+for i in active_idxs:
+    lbl = PRIMARY_LABELS[i]
+    y_i = Y_TR[:, i]
+    try:
+        auc_perch = roc_auc_score(y_i, perch_sig_tr[:, i])
+        auc_off   = roc_auc_score(y_i, oof_off[:, i])
+        auc_on    = roc_auc_score(y_i, oof_on[:, i])
+    except Exception:
+        auc_perch = auc_off = auc_on = float("nan")
+    per_class_rows.append({
+        "species"   : lbl,
+        "n_pos"     : int(y_i.sum()),
+        "auc_perch" : auc_perch,
+        "auc_off"   : auc_off,
+        "auc_on"    : auc_on,
+        "delta_attn": auc_on - auc_off,
+        "delta_mlp" : auc_off - auc_perch,
+    })
+
+auc_df = (pd.DataFrame(per_class_rows)
+            .sort_values("auc_on", ascending=False)
+            .reset_index(drop=True))
+print(f"\nPer-class AUC — top 20 (active={len(auc_df)} classes):")
+print(auc_df.head(20).to_string(index=False))
+print(f"\nPer-class AUC — bottom 10:")
+print(auc_df.tail(10).to_string(index=False))
+auc_df.to_csv(OUT_DIR / "per_class_auc_nb14b.csv", index=False)
+
+# %%
+# -- Diagnostic 2: Global ablation delta + JSON summary ----------------------
+auc_on_global    = roc_auc_score(Y_TR[:, active_mask], oof_on[:, active_mask],      average="macro")
+auc_off_global   = roc_auc_score(Y_TR[:, active_mask], oof_off[:, active_mask],     average="macro")
+auc_perch_global = roc_auc_score(Y_TR[:, active_mask], perch_sig_tr[:, active_mask], average="macro")
+
+print(f"\n{'='*55}")
+print(f"OOF macro-AUC  Perch-only    : {auc_perch_global:.4f}")
+print(f"OOF macro-AUC  Attn off      : {auc_off_global:.4f}  ({auc_off_global-auc_perch_global:+.4f} vs Perch)")
+print(f"OOF macro-AUC  Attn on       : {auc_on_global:.4f}  ({auc_on_global-auc_off_global:+.4f} vs off)")
+print(f"{'='*55}")
+
+diagnostics = {
+    "notebook"            : "nb14b",
+    "model"               : "Attention-replace",
+    "oof_auc_perch"       : round(float(auc_perch_global), 6),
+    "oof_auc_temporal_off": round(float(auc_off_global), 6),
+    "oof_auc_temporal_on" : round(float(auc_on_global), 6),
+    "delta_attn"          : round(float(auc_on_global - auc_off_global), 6),
+    "delta_mlp_vs_perch"  : round(float(auc_off_global - auc_perch_global), 6),
+    "n_active_classes"    : int(active_mask.sum()),
+    "n_train_windows"     : int(len(Y_TR)),
+    "n_train_files"       : int(n_train_files),
+    "attn_dim"            : ATTN_DIM,
+    "attn_heads"          : ATTN_HEADS,
+    "ctx_dim"             : CTX_DIM,
+    "epochs"              : EPOCHS,
+}
+with open(OUT_DIR / "diagnostics_nb14b.json", "w") as f:
+    json.dump(diagnostics, f, indent=2)
+print("Saved diagnostics_nb14b.json")
+
+# %%
+# -- Diagnostic 3: Prediction distribution histograms ------------------------
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+auc_df_clean = auc_df.dropna(subset=["auc_on"]).reset_index(drop=True)
+top10    = auc_df_clean.head(10)["species"].tolist()
+bottom10 = auc_df_clean.tail(10)["species"].tolist()
+species_to_plot = top10 + bottom10
+
+fig, axes = plt.subplots(4, 5, figsize=(20, 16))
+fig.suptitle(
+    "nb14b Attention (replace): Prediction Distributions — top-10 & bottom-10 by OOF AUC",
+    fontsize=11)
+
+for ax, sp in zip(axes.flatten(), species_to_plot):
+    ci   = label_to_idx[sp]
+    pos  = oof_on[Y_TR[:, ci] > 0, ci]
+    neg  = oof_on[Y_TR[:, ci] == 0, ci]
+    row  = auc_df_clean[auc_df_clean["species"] == sp]
+    av   = row["auc_on"].values[0] if len(row) else float("nan")
+    np_  = int(Y_TR[:, ci].sum())
+    ax.hist(neg, bins=25, alpha=0.55, label="neg", color="steelblue", density=True)
+    ax.hist(pos, bins=25, alpha=0.55, label="pos", color="crimson",   density=True)
+    ax.set_title(f"{sp}\nAUC={av:.3f}  n_pos={np_}", fontsize=7)
+    ax.legend(fontsize=6)
+    ax.set_xlabel("pred", fontsize=6)
+
+plt.tight_layout()
+plt.savefig(OUT_DIR / "pred_dist_nb14b.png", dpi=100, bbox_inches="tight")
+plt.close()
+print("Saved pred_dist_nb14b.png")
+
+# %%
+# -- Diagnostic 4 (attention-specific): Attention weight heatmap --------------
+# Compute average 12x12 attention matrix across all training files using fold 0 model.
+attn_fold0 = fold_models[0][0]
+attn_fold0.eval()
+with torch.no_grad():
+    _ = attn_fold0(file_seq_tensor, return_attn=True)
+    attn_w = attn_fold0.last_attn_weights   # (n_files, 12, 12)
+
+avg_attn = attn_w.mean(0).numpy()   # (12, 12)
+
+fig, ax = plt.subplots(figsize=(7, 6))
+im = ax.imshow(avg_attn, cmap="Blues", aspect="auto")
+ax.set_xlabel("Key position (window index)", fontsize=10)
+ax.set_ylabel("Query position (window index)", fontsize=10)
+ax.set_title("nb14b Self-Attention: avg 12×12 weights across training files (fold 0)", fontsize=10)
+ax.set_xticks(range(12)); ax.set_yticks(range(12))
+ax.set_xticklabels([f"{(i+1)*5}s" for i in range(12)], rotation=45, fontsize=7)
+ax.set_yticklabels([f"{(i+1)*5}s" for i in range(12)], fontsize=7)
+plt.colorbar(im, ax=ax, label="attention weight")
+plt.tight_layout()
+plt.savefig(OUT_DIR / "attn_weights_nb14b.png", dpi=100, bbox_inches="tight")
+plt.close()
+print("Saved attn_weights_nb14b.png")
+print(f"Attention weight range: min={avg_attn.min():.4f}  max={avg_attn.max():.4f}")
+print(f"Diagonal mean (local): {np.diag(avg_attn).mean():.4f}")
+print(f"Off-diagonal mean    : {(avg_attn.sum()-np.trace(avg_attn))/(12*11):.4f}")
+
+# %%
+# -- Cleanup train memory -----------------------------------------------------
+del pca_tr, scores_tr, perch_sig_tr, file_seq_np
+gc.collect()
+
+# %%
+# -- Extract Perch on test_soundscapes ----------------------------------------
+test_dir   = BASE_DIR / "test_soundscapes"
+test_files = sorted(test_dir.glob("*.ogg")) if test_dir.exists() else []
+if not test_files:
+    print("test_soundscapes empty -- staging fallback: first 16 train soundscapes")
+    test_files = sorted((BASE_DIR / "train_soundscapes").glob("*.ogg"))[:16]
+
+print(f"\nExtracting Perch on {len(test_files)} test soundscapes ...")
+meta_te, scores_te, embs_te = extract_perch_60s_files(
+    test_files, BATCH_FILES_TEST, label="test")
+
+# %%
+# -- Build test file sequence matrix ------------------------------------------
+pca_te = pca.transform(embs_te).astype(np.float32)
+del embs_te; gc.collect()
+
+test_fnames_ord  = sorted(meta_te["filename"].unique())
+fname_to_fidx_te = {f: i for i, f in enumerate(test_fnames_ord)}
+meta_te["file_idx"]   = meta_te["filename"].map(fname_to_fidx_te).astype(np.int32)
+meta_te["window_idx"] = meta_te["window_idx"].astype(np.int32)
+
+file_idx_te   = meta_te["file_idx"].to_numpy(dtype=np.int32)
+window_idx_te = meta_te["window_idx"].to_numpy(dtype=np.int32)
+
+n_test_files = len(test_fnames_ord)
+file_seq_te  = np.zeros((n_test_files, SC_N_WINDOWS, PCA_DIM), dtype=np.float32)
+for row_i in range(len(pca_te)):
+    file_seq_te[file_idx_te[row_i], window_idx_te[row_i]] = pca_te[row_i]
+file_seq_te_tensor = torch.from_numpy(file_seq_te).float()
+
+Xp_te   = torch.from_numpy(pca_te).float()
+fids_te = torch.from_numpy(file_idx_te).long()
+wids_te = torch.from_numpy(window_idx_te).long()
+print(f"Test sequence tensor: {file_seq_te_tensor.shape}")
+
+# %%
+# -- 5-fold ensemble on test --------------------------------------------------
+print("\nRunning 5-fold Attention+MLP ensemble on test ...")
+mlp_pred = np.zeros((len(Xp_te), N_CLASSES), dtype=np.float32)
+
+with torch.no_grad():
+    for k, (attn_k, mlp_k) in enumerate(fold_models):
+        attn_k.eval(); mlp_k.eval()
+        ctx_out_te = attn_k(file_seq_te_tensor)        # (n_test_files, 12, CTX_DIM)
+        ctx_te     = ctx_out_te[fids_te, wids_te]      # (N_te, CTX_DIM)
+        out_k = np.zeros_like(mlp_pred)
+        chunk = 256
+        for i in range(0, len(Xp_te), chunk):
+            xp_c = Xp_te[i:i + chunk]
+            ct_c = ctx_te[i:i + chunk]
+            out_k[i:i + chunk] = torch.sigmoid(mlp_k(build_mlp_input(xp_c, ct_c))).numpy()
+        mlp_pred += out_k
+        print(f"  fold {k} done")
+
+mlp_pred /= len(fold_models)
+
+# %%
+# -- Alpha-blend + submission -------------------------------------------------
+perch_sig_te = 1.0 / (1.0 + np.exp(-scores_te))
+final = (alpha_per_class[None, :] * mlp_pred
+         + (1.0 - alpha_per_class[None, :]) * perch_sig_te)
+print(f"Predictions: {final.shape}  min={final.min():.4f}  max={final.max():.4f}")
+
+pred_df = pd.DataFrame(final, columns=PRIMARY_LABELS)
+pred_df["row_id"] = meta_te["row_id"].values
+prior = 1.0 / N_CLASSES
+
+in_real_submission = (
+    set(pred_df["row_id"]).issubset(set(sample_sub["row_id"]))
+    or len(sample_sub) > 10
+)
+if in_real_submission:
+    sub = sample_sub[["row_id"]].merge(pred_df, on="row_id", how="left")
+    sub[PRIMARY_LABELS] = sub[PRIMARY_LABELS].fillna(prior)
+else:
+    print("STAGING: writing pred_df directly")
+    sub = pred_df[["row_id"] + PRIMARY_LABELS]
+
+assert sub.columns.tolist() == ["row_id"] + PRIMARY_LABELS
+sub.to_csv(OUT_DIR / "submission.csv", index=False)
+
+print(f"\nSubmission saved: {sub.shape}")
+print(f"OOF AUC  Perch-only    : {auc_perch_global:.4f}")
+print(f"OOF AUC  Attn off      : {auc_off_global:.4f}")
+print(f"OOF AUC  Attn on       : {auc_on_global:.4f}")
+print(f"Attn delta (on-off)    : {auc_on_global - auc_off_global:+.4f}")
+print(sub.head(3))

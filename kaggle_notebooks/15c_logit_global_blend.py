@@ -100,6 +100,7 @@ LOGIT_PCA_DIM = 32                                               # global logit 
 MLP_IN_DIM    = PCA_DIM + SCALAR_DIM + CTX_DIM + LOGIT_PCA_DIM  # 109
 
 BLEND      = True    # alpha-blend ON
+SEED       = 42
 N_FOLDS    = 5
 EPOCHS     = 30
 LR         = 1e-3
@@ -373,6 +374,8 @@ def train_one_fold(pca_tr_f, scalars_tr_f, logit_ctx_tr_f, Y_tr_f, fids_tr_f, wi
     fids_va_t = torch.from_numpy(fids_va_f).long()
     wids_va_t = torch.from_numpy(wids_va_f).long()
 
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
     bigru = BiGRUContext()
     mlp   = VectorizedMLP()
     opt   = torch.optim.Adam(list(bigru.parameters()) + list(mlp.parameters()),
@@ -537,7 +540,8 @@ pca_te      = pca.transform(embs_te).astype(np.float32)
 del embs_te; gc.collect()
 
 temp_te      = build_temporal_features(scores_te, meta_te)
-logit_ctx_te  = logit_pca_fit.transform(scores_te).astype(np.float32)  # (N_te, 32)
+scores_te_clean = np.nan_to_num(scores_te, nan=0.0, posinf=0.0, neginf=0.0)
+logit_ctx_te  = logit_pca_fit.transform(scores_te_clean).astype(np.float32)  # (N_te, 32)
 
 test_fnames_ord  = sorted(meta_te["filename"].unique())
 fname_to_fidx_te = {f: i for i, f in enumerate(test_fnames_ord)}

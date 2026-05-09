@@ -1,7 +1,7 @@
 {
-  "id": "alexycactus/birdclef-2026-pseudo-label-train-06",
-  "title": "BirdCLEF 2026 Pseudo Label Train 0.6",
-  "code_file": "16a_pseudo_label_train_06.py",
+  "id": "alexycactus/birdclef-2026-pseudo-label-train-08",
+  "title": "BirdCLEF 2026 Pseudo Label Train 0.8",
+  "code_file": "16b_pseudo_label_train_08.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": false,

@@ -85,7 +85,7 @@ _onnx_candidates = [
 ONNX_PATH = next((p for p in _onnx_candidates if p.exists()), None)
 OUT_DIR   = Path("/kaggle/working"); OUT_DIR.mkdir(exist_ok=True)
 
-# Saver kernel output aEUR" path is non-deterministic; use glob fallback
+# Saver kernel output - path is non-deterministic; use glob fallback
 import glob as _g
 _saver_hits = _g.glob("/kaggle/input/**/embs_ul.npy", recursive=True)
 SAVER_DIR   = Path(_saver_hits[0]).parent if _saver_hits else None
@@ -93,7 +93,7 @@ SAVER_DIR   = Path(_saver_hits[0]).parent if _saver_hits else None
 print(f"BASE_DIR exists = {BASE_DIR.exists()}")
 print(f"ONNX found      = {ONNX_PATH is not None}")
 print(f"SAVER_DIR       = {SAVER_DIR}")
-assert SAVER_DIR is not None, "Saver kernel output not mounted aEUR" add kernel_sources"
+assert SAVER_DIR is not None, "Saver kernel output not mounted - add kernel_sources"
 
 # %%
 PERCH_SR       = 32_000
@@ -559,7 +559,7 @@ print(f"\n[Phase 5] Threshold={THRESHOLD}: {n_pseudo} / {N_ul} windows selected 
       f"({100*n_pseudo/max(N_ul,1):.1f}%)")
 
 if n_pseudo == 0:
-    print("WARNING: No pseudo-labeled windows survive threshold aEUR" will use Round 1 results")
+    print("WARNING: No pseudo-labeled windows survive threshold - will use Round 1 results")
     ul_pred_filt      = np.zeros((0, N_CLASSES), dtype=np.float32)
     pca_ul_filt       = np.zeros((0, PCA_DIM),   dtype=np.float32)
     temp_ul_filt      = np.zeros((0, N_CLASSES, SCALAR_DIM), dtype=np.float32)
@@ -645,7 +645,7 @@ fold_models_r2 = []
 pl_idx         = np.arange(n_labeled, n_labeled + n_pseudo)  # always in training
 
 if n_pseudo == 0:
-    print("\n[Phase 6] Skipping Round 2 (no pseudo-labels) aEUR" using Round 1 OOF")
+    print("\n[Phase 6] Skipping Round 2 (no pseudo-labels) - using Round 1 OOF")
     oof_r2 = oof_r1
 else:
     print(f"\n[Phase 6] Round 2: retraining {N_FOLDS}-fold MLP on combined "
@@ -781,7 +781,7 @@ with torch.no_grad():
 mlp_pred /= len(fold_models_final)
 
 # %%
-# Alpha-blend: BLEND ON (essential aEUR" nb15f without blend scored LB 0.502)
+# Alpha-blend: BLEND ON (essential - nb15f without blend scored LB 0.502)
 final = (alpha_per_class[None, :] * mlp_pred
          + (1.0 - alpha_per_class[None, :]) * perch_sig_te)
 print(f"Predictions: {final.shape}  min={final.min():.4f}  max={final.max():.4f}")

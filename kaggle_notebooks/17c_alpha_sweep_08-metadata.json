@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-alpha-sweep-08",
+  "title": "BirdCLEF 2026 Alpha Sweep 08",
+  "code_file": "17c_alpha_sweep_08.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["rishikeshjani/perch-onnx-for-birdclef-2026"],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [],
+  "model_sources": ["google/bird-vocalization-classifier/tensorflow2/perch_v2_cpu/1"]
+}

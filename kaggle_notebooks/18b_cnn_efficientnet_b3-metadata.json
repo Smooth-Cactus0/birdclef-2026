@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-cnn-efficientnet-b3",
+  "title": "BirdCLEF 2026 CNN EfficientNet B3",
+  "code_file": "18b_cnn_efficientnet_b3.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [],
+  "model_sources": []
+}

@@ -3,13 +3,15 @@
 > Wildlife species identification from passive acoustic monitoring recordings in the **Pantanal wetlands**, Brazil.
 > Kaggle code competition — metric: **macro ROC-AUC** — deadline: **June 3, 2026**
 
+**Current best LB: 0.892** ([nb17b](kaggle_notebooks/17b_alpha_sweep_06.py) — Perch v2 ONNX + per-class MLP probes + α=0.6 blend)
+
 ---
 
 ## Project Scope
 
 This repository contains a full end-to-end pipeline for the [BirdCLEF+ 2026](https://www.kaggle.com/competitions/birdclef-2026) competition, built around two goals:
 
-1. **Win the competition** — systematic model improvements from baseline EfficientNet-B0 through multi-round pseudo-labeling and ensemble
+1. **Win the competition** — systematic model improvements toward the historical winning band (LB 0.93+)
 2. **Didactic Kaggle notebooks** — each notebook is written to be educational first, targeting upvotes alongside a competitive score
 
 The competition requires identifying **234 wildlife species** (birds, insects, amphibians, mammals, reptiles) from continuous PAM recordings deployed across ~1,000 recorders in the Pantanal.
@@ -19,6 +21,16 @@ Key novelties vs. prior BirdCLEF editions:
 - **Scale**: ~1,000 passive acoustic recorders running continuously
 - **New region**: Pantanal (Brazil) — entirely different species distribution from 2025 (Colombia)
 - **Labeled soundscapes**: expert-annotated segments from real PAM recordings — primary data for some species
+
+---
+
+## Progress at a Glance
+
+![LB progression](docs/figures/lb_progression.png)
+
+The current path (nb13 → nb17b) is the **Perch+MLP track**: Google's Perch v2 audio foundation model used as a frozen feature extractor, with small per-class MLP probes trained on the 66 labeled soundscapes (792 windows). This shortcut path got us to LB 0.892 in 7 notebooks. The pseudo-labeling round (nb16) failed — a useful negative result, see [§ Key Findings](#key-findings).
+
+**Next direction (in flight):** [nb18](kaggle_notebooks/18a_cnn_efficientnet_b0.py) opens a parallel CNN baseline track (EfficientNet-B0/B3/RegNetY-008 trained from scratch on mel spectrograms) — historically the +0.03 to +0.05 lever in 2024/2025.
 
 ---
 
@@ -118,83 +130,160 @@ The competition runs inference on Kaggle CPU with a ~90-120 min total budget. Al
 
 ---
 
-## Pipeline Architecture
+## Pipeline Architecture (current best: nb17b, LB 0.892)
+
+![Perch+MLP architecture](docs/figures/architecture_perch_mlp.png)
+
+The current path uses **Google Perch v2** as a frozen feature extractor and trains tiny per-class probes on top:
+
+- **Inputs**: each 60s soundscape → 12 × 5s windows
+- **Perch v2 ONNX** (frozen) → 1536-dim embeddings + 234-dim projected logits per window
+- **PCA** → 64-dim compressed embedding
+- **BiGRU** over the 12 windows → 8-dim temporal context
+- **Per-class logit feature** → 1 scalar per probe (Perch's own logit for that species)
+- **5 hand-crafted scalars** → roll, mean, max, std per window
+- **VectorizedMLP**: 234 parallel probes (one per species), input 78-dim → 128 → 64 → 1, implemented via `torch.bmm` for efficiency
+- **Alpha-blend** at submission: `final = α · sigmoid(MLP) + (1-α) · sigmoid(Perch_logit)` for mapped species; `α=1.0` (MLP only) for unmapped species (insect sonotypes, etc.)
+
+The nb17 alpha sweep showed that **lower α is better** — Perch's logit carries more signal than the MLP probes for mapped species. The MLP is best understood as a *correction layer* on top of Perch, not an independent predictor.
+
+### Pipeline diagram (original CNN plan — pending in nb18)
+
+The original March 2026 strategy targeted a CNN ensemble (EfficientNet-B0/B3 + RegNetY + BirdNET + multi-round pseudo-labeling). We bypassed that for the faster Perch+MLP path above, and are now **opening it as a parallel track** in nb18a/b/c.
 
 ```
 Training data
 ├── train_audio/         (35,549 clips, XC + iNat)
-├── train_soundscapes/   (10,658 PAM recordings)
+├── train_soundscapes/   (10,658 PAM recordings, 66 labeled)
 └── train_soundscapes_labels.csv  (1,478 expert segments)
          │
          ▼
   ┌──────────────────────────────────────────┐
-  │            Two-Pipeline Architecture     │
-  │                                          │
-  │  Bird pipeline (162 classes)             │
-  │  ├── EfficientNet-B1/B3/B4               │
-  │  ├── RegNetY-016                         │
-  │  └── BirdNET pretrained (9K species)     │
-  │                                          │
-  │  Non-bird pipeline (72 classes)          │
-  │  ├── ECA-NFNet-L0  (Focal BCE)           │
-  │  └── Primary data: soundscape gold segs  │
+  │       nb18 - parallel CNN track          │
+  │  EfficientNet-B0  / B3  / RegNetY-008    │
+  │  Mel spec (n_mels=128, SR=32k)           │
+  │  Background mix + SpecAug + MixUp        │
+  │  5-fold CV, AdamW + cosine               │
   └──────────────────────────────────────────┘
          │
          ▼
-  Pseudo-labeling (4 rounds)
-  ├── Voters: B4 + EVA-02 Large + DINOv2-Large
-  ├── 2-of-3 consensus, rarity-stratified thresholds
-  └── Power scaling: p^0.7
+  nb19 - ensemble Perch+MLP × CNN
          │
          ▼
-  Ensemble (rank averaging)
-  └── OpenVINO FP16 → submission CSV
+  OpenVINO FP16 -> submission CSV
 ```
-
-**ViTs (EVA-02, DINOv2) are used for pseudo-label generation only** — they produce superior pseudo-labels but are too slow (~8-15s/chunk on CPU) for competition inference.
 
 ---
 
 ## Notebooks
+
+### Foundation (didactic, March–April 2026)
 
 | # | Notebook | Purpose | GPU |
 |---|---|---|---|
 | 01 | [EDA](kaggle_notebooks/01_eda_birdclef2026.py) | Taxa breakdown, class imbalance, geographic domain shift, data quality | No |
 | 02 | [Spectrogram Guide](kaggle_notebooks/02_spectrogram_guide.py) | Waveform→STFT→mel pipeline, parameter sweep, multi-taxa gallery | No |
 | 03 | [EfficientNet-B0 Baseline](kaggle_notebooks/03_baseline_efficientnet.py) | Full training pipeline, 5-fold CV, soundscape inference, ONNX export | Yes |
-| 04 | [Augmentation Showcase](kaggle_notebooks/04_augmentation_showcase.py) | SpecAugment, MixUp, background mix, time shift, pitch shift — visual demos | No |
+| 04 | [Augmentation Showcase](kaggle_notebooks/04_augmentation_showcase.py) | SpecAugment, MixUp, background mix — visual demos | No |
 | 05 | [OpenVINO Inference](kaggle_notebooks/05_inference_openvino.py) | PyTorch→ONNX→OpenVINO export, CPU benchmark, budget planning | No |
-| 06 | [Backbone Search](kaggle_notebooks/06_backbone_search.py) | B1/B3/B4/RegNetY/NFNet, BCE loss, GroupKFold by site | Yes |
-| 07 | [BirdNET Fine-tune](kaggle_notebooks/07_birdnet_finetune.py) | 2-phase fine-tuning of BirdNET pretrained weights | Yes |
-| 08 | [Non-Bird Pipeline](kaggle_notebooks/08_nonbird_pipeline.py) | Focal BCE, soundscape gold segments, insect sonotypes | Yes |
-| 09 | [Pseudo-Labeling](kaggle_notebooks/09_pseudo_labeling.py) | 2-of-3 consensus PL, rarity thresholds, power scaling | GPU |
-| 10 | [ViT PL Generator](kaggle_notebooks/10_vit_pl_generator.py) | EVA-02 Large / DINOv2 fine-tune for PL diversity | Heavy |
-| 11 | [Final Ensemble](kaggle_notebooks/11_ensemble.py) | Rank-avg bird + weighted non-bird, OpenVINO, submission | No |
+
+### Perch+MLP track (May 2026 — LB 0.839 → 0.892)
+
+| # | Notebook | Purpose | LB |
+|---|---|---|---|
+| 13 | [Perch MLP Baseline](kaggle_notebooks/13_perch_mlp_baseline.py) | Perch v2 ONNX embeddings + PCA + 234 MLP probes | **0.839** |
+| 14a | [BiGRU Replace](kaggle_notebooks/14a_bigru_replace.py) | BiGRU temporal context replaces hand-crafted scalars | 0.875 |
+| 14c | [BiGRU Augment](kaggle_notebooks/14c_bigru_augment.py) | BiGRU ctx **appended** to scalars (MLP_IN=77) | 0.879 |
+| 15a | [Per-class logit + blend](kaggle_notebooks/15a_logit_cls_blend.py) | Each species' Perch logit added as a probe input (MLP_IN=78) | **0.883** |
+| 15b–f | Logit variants 2×3 matrix | Global PCA-32 ctx, blend ON/OFF combinations | 0.502–0.864 |
+| 16 | [Pseudo-label pipeline](kaggle_notebooks/16_pseudo_label_saver.py) (saver + 3 thresholds) | 127,104 windows on `unlabeled_soundscapes/` | **FAILED (0.502–0.817)** |
+| 17a–d | [Alpha sweep](kaggle_notebooks/17b_alpha_sweep_06.py) (0.5, 0.6, 0.8, 0.9) | Calibration diagnostic on the blend weight | **0.892** (α=0.5 or 0.6) |
+
+### CNN track (in flight)
+
+| # | Notebook | Purpose | Status |
+|---|---|---|---|
+| 18a | [EfficientNet-B0 from scratch](kaggle_notebooks/18a_cnn_efficientnet_b0.py) | Mel spec → CNN, 5-fold CV, BCE multi-label | Pending |
+| 18b | [EfficientNet-B3](kaggle_notebooks/18b_cnn_efficientnet_b3.py) | Same as 18a, larger backbone | Pending |
+| 18c | [RegNetY-008](kaggle_notebooks/18c_cnn_regnety_008.py) | Architectural diversity for ensemble | Pending |
+
+Each notebook is implemented in a separate Claude Code session using the implementation briefs at `docs/plans/nbXX-implementation.md` — these contain the full architecture, kernel metadata, and push workflow so a fresh session has zero context dependency.
+
+---
+
+## Key Findings
+
+### Alpha sweep (nb17) — the most informative result so far
+
+![Alpha sweep](docs/figures/alpha_sweep.png)
+
+Sweeping the blend weight `α` in `final = α·MLP + (1-α)·Perch_sigmoid` showed:
+- **Monotonic gradient**: lower α → better LB
+- **Plateau at α ∈ [0.5, 0.6]** at LB 0.892 (+0.009 over the α=0.7 default in nb15a)
+- **0.025 spread** across the 4 sweep values, well above the 0.01 threshold that justifies a learnable per-class α in nb19
+
+The architectural reframe: the MLP is a *correction layer* on top of Perch, not an independent predictor. Perch's projected logits already carry more signal than our small probes can reproduce; the MLP's value is in conditionally re-weighting Perch outputs per species, not predicting from scratch.
+
+### Pseudo-labeling (nb16) — a useful negative result
+
+Running the trained nb15a model on the 127,104 windows in `unlabeled_soundscapes/` and re-training with thresholded soft labels **hurt LB by 6.6 points**:
+
+| Threshold | LB | Δ vs nb15a |
+|---|---|---|
+| 0.6 | 0.502 | −0.381 |
+| 0.8 | 0.817 | −0.066 |
+| 0.9 | 0.816 | −0.067 |
+
+Even threshold 0.9 (selecting only the highest-confidence windows) regressed by the same amount as threshold 0.8 — telling us this is **systematic bias**, not noise. The pseudo-labels confidently reinforce whatever the model already believes, not the truth. Naive PL on `unlabeled_soundscapes/` is a dead end with this architecture; future weak-supervision work must use a different mechanism (e.g., Perch logits directly as weak labels, or per-class agreement filters).
+
+### OOF on 66 labeled soundscapes is an unreliable proxy for LB
+
+Multiple times we saw OOF AUC move in the opposite direction from LB:
+- nb15c: OOF +0.034 vs nb14c, LB −0.015
+- nb16: high OOF on retrained models, LB collapsed
+
+With only 792 windows in validation, the OOF distribution is too narrow to reflect generalisation to the test set. Decisions must be made on LB, not OOF, until we have access to more labeled data.
 
 ---
 
 ## Strategy Summary
 
-Based on analysis of 2024 and 2025 winning solutions:
+Original strategy (from analysis of 2024–2025 winning solutions):
 
 | Component | Choice | Rationale |
 |---|---|---|
 | Loss | BCE (bird), Focal BCE (non-bird) | Test chunks are multi-label; Focal handles Caiman (1 clip) |
-| Backbone | EfficientNet-B1/B3/B4 + RegNetY-016 | Consistent winners 2024–2025 |
-| Validation | GroupKFold by recorder site | Prevents acoustic site leakage in CV |
+| Backbone | EfficientNet-B0/B3 + RegNetY-008 (nb18) | Consistent winners 2024–2025 |
+| Validation | GroupKFold by file/site | Prevents acoustic site leakage in CV |
 | Key augmentation | Background mix (p=0.5) | Closes domain gap between XC clips and Pantanal PAM |
-| Pseudo-labeling | 4 rounds, 2-of-3 vote, power scaling p^0.7 | Mandatory for top-5; power scaling prevents error amplification |
 | Inference | OpenVINO FP16 | ~8-12× CPU speedup; all top teams used it |
 
 Full strategy document: [docs/plans/2026-03-12-winning-strategy-design.md](docs/plans/2026-03-12-winning-strategy-design.md)
+
+Per-notebook implementation briefs (used to spin up fresh sessions):
+- [nb16 implementation](docs/plans/nb16-implementation.md) — pseudo-labeling two-kernel design
+- [nb17 implementation](docs/plans/nb17-implementation.md) — alpha sweep
+- [nb18 implementation](docs/plans/nb18-implementation.md) — CNN backbone sweep
 
 ---
 
 ## Experiment Log
 
-| ID | Model | Backbone | PL round | CV AUC | LB AUC | Notes |
+| ID | Date | Track | Notebook | OOF AUC | LB AUC | Notes |
 |---|---|---|---|---|---|---|
-| exp001 | baseline | EfficientNet-B0 | 0 | TBD | TBD | 10ep, CrossEntropy, StratifiedKFold |
+| exp004 | 2026-05-07 | Perch+MLP | nb13 | 0.64 | **0.839** | Baseline: PCA(64) + 5 scalars + 234 probes; α=0.7 blend |
+| exp005 | 2026-05-07 | Perch+MLP | nb14a | 0.5222 | 0.875 | BiGRU(hidden=32) ctx replaces hand-crafted scalars |
+| exp006 | 2026-05-07 | Perch+MLP | nb14c | 0.5049 | 0.879 | BiGRU ctx **appended** to scalars (MLP_IN=77) |
+| exp007 | 2026-05-08 | Perch+MLP | nb15a | 0.5045 | **0.883** | Per-class Perch logit added as probe input (MLP_IN=78) |
+| exp008 | 2026-05-08 | Perch+MLP | nb15c | 0.5386 | 0.864 | Global PCA-32 logit ctx — OOF +0.034, LB −0.015: overfit signal |
+| exp009 | 2026-05-08 | Perch+MLP | nb15f | 0.5121 | 0.502 | Blend OFF (MLP only) — confirms blend is essential |
+| exp010 | 2026-05-09 | Perch+MLP | nb16b | n/a | 0.817 | Pseudo-label threshold 0.8 — FAILED |
+| exp011 | 2026-05-09 | Perch+MLP | nb16c | n/a | 0.816 | Pseudo-label threshold 0.9 — FAILED (systematic bias confirmed) |
+| exp012 | 2026-05-11 | Perch+MLP | nb17a | n/a | **0.892** | Alpha sweep α=0.5 — tied best |
+| exp013 | 2026-05-11 | Perch+MLP | nb17b | n/a | **0.892** | Alpha sweep α=0.6 — tied best, promoted to baseline |
+| exp014 | 2026-05-11 | Perch+MLP | nb17c | n/a | 0.878 | Alpha sweep α=0.8 — confirms lower-α is better |
+| exp015 | 2026-05-11 | Perch+MLP | nb17d | n/a | 0.867 | Alpha sweep α=0.9 — near MLP-only regresses |
+| exp016 | _pending_ | CNN | nb18a | — | — | EfficientNet-B0 from scratch (parallel track) |
 
 ---
 

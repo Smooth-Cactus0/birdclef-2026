@@ -289,7 +289,15 @@ class BirdAudioDataset(torch.utils.data.Dataset):
         y_audio = load_audio(r["path"])
         y_audio = crop_window(y_audio, WINDOW_SAMPLES, train=self.train, seg=seg)
         y_audio = absmax_normalize(y_audio)
-        return y_audio.astype(np.float32), r["target"].astype(np.float32)
+        # Length safety + force fresh contiguous copies. crop_window returns a
+        # slice of np.tile() output which can be a non-resizable view, and the
+        # default DataLoader collate fails with "Trying to resize storage that
+        # is not resizable" when it tries to stack such views into a batch.
+        if len(y_audio) != WINDOW_SAMPLES:
+            y_audio = np.pad(y_audio, (0, max(0, WINDOW_SAMPLES - len(y_audio))))[:WINDOW_SAMPLES]
+        audio_out  = np.array(y_audio,  dtype=np.float32)   # always copies
+        target_out = np.array(r["target"], dtype=np.float32)
+        return audio_out, target_out
 
 
 def mixup_batch(wavs_t, tgts_t, p=MIXUP_P, weight=MIXUP_WEIGHT):

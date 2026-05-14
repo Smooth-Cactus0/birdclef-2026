@@ -333,8 +333,9 @@ def train_one_fold(fold_idx, train_rows, val_rows, fold_pred_path):
             with torch.cuda.amp.autocast():
                 mel = wav_to_mel_3ch(wavs_t)                # (B, 3, n_mels, T)
                 clip, _ = model(mel)                         # sigmoided in SED head
-                clip = clip.clamp(min=1e-7, max=1.0 - 1e-7)
-                loss = bce_loss(clip, tgts_t)
+            # BCELoss is autocast-unsafe; compute it in fp32 outside autocast
+            clip = clip.float().clamp(min=1e-7, max=1.0 - 1e-7)
+            loss = bce_loss(clip, tgts_t.float())
             scaler.scale(loss).backward()
             scaler.step(opt); scaler.update(); sched.step()
             tr_loss += loss.item(); nb += 1

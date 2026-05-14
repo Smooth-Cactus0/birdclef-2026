@@ -30,8 +30,9 @@
 | nb17d | α=0.9 | 0.867 | −0.016 | MLP-heavier blend is worse |
 | nb18a | EfficientNet-B0 from scratch, 5s chunks, BCE, no SED | 0.852 | n/a | First CNN works but no winner techniques |
 | nb18c | RegNetY-008 same as nb18a | FAIL | n/a | Pipeline issue (unresolved) |
-| nb19a | nb17b + top-K postproc (running) | TBD | TBD | Testing 2025 2nd-place trick |
-| nb20a | EffNet-B0 + SED head + 20s chunks + MixUp (running, T4 GPU) | TBD | TBD | First proper CNN baseline |
+| nb19a | nb17b + top-K postproc (K=1) | **0.897** | +0.005 | **New best.** 2025 2nd-place trick generalises. Apply to every future submission. |
+| nb20a v1/v2 | EffNet-B0 + SED + 20s + MixUp | FAIL | n/a | v1: `BCELoss` autocast-unsafe; v2: NaN propagation through clamp tripping BCE assertion. Fixed in v3 (BCEWithLogitsLoss + NaN guard). |
+| nb20a v3 | Same recipe, BCEWithLogitsLoss + NaN guard | TBD | TBD | Pushed 2026-05-14 |
 
 **Locked-in lessons:**
 1. **OOF on 792 windows is unreliable.** Trust LB. Any spread < 0.01 between variants is noise.
@@ -362,9 +363,9 @@ Permanently dead (do not revisit unless mechanism changes):
 
 ---
 
-## Currently running (snapshot at 2026-05-14)
+## Currently running (snapshot at 2026-05-14, late session)
 
-| Kernel | Slug | ETA |
+| Kernel | Slug | Status |
 |---|---|---|
-| nb19a | `birdclef-2026-topk-postproc` | ~5 min remaining |
-| nb20a | `birdclef-2026-cnn-sed-b0` | ~3h remaining (just started after BCELoss fix) |
+| nb19a | `birdclef-2026-topk-postproc` | ✅ **DONE — LB 0.897** |
+| nb20a v3 | `birdclef-2026-cnn-sed-b0` | Pushed after v1/v2 errors. NaN guard + BCEWithLogitsLoss. ~3h remaining. |

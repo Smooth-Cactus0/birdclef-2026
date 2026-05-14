@@ -204,6 +204,8 @@ def crop_window(y, want_samples=WINDOW_SAMPLES, train=True, seg=None):
     return y[start:start + want_samples]
 
 def absmax_normalize(y):
+    # Replace NaN/inf first so np.max doesn't propagate NaN
+    y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
     m = float(np.max(np.abs(y)))
     return (y / m) if m > 1e-8 else y
 
@@ -228,6 +230,8 @@ def wav_to_mel_3ch(wav_t):
 
 # %%
 # SED head -- attention pooling over time frames (Kong et al., 2020)
+# Returns clip-level LOGITS (not probs) so we can use BCEWithLogitsLoss,
+# which is autocast-safe and NaN-resistant compared to BCELoss.
 class SEDHead(nn.Module):
     def __init__(self, in_features, n_classes):
         super().__init__()
@@ -238,12 +242,15 @@ class SEDHead(nn.Module):
 
     def forward(self, x):
         # x: (B, C, T) after frequency pooling
-        x = x.transpose(1, 2)                              # (B, T, C)
-        att_logits = torch.tanh(self.fc_att(x))
-        att        = torch.softmax(att_logits, dim=1)      # over time
-        framewise  = torch.sigmoid(self.fc_cla(x))         # (B, T, n_classes)
-        clipwise   = (att * framewise).sum(dim=1)          # (B, n_classes)
-        return clipwise, framewise
+        x = x.transpose(1, 2)                                  # (B, T, C)
+        att_logits   = torch.tanh(self.fc_att(x))
+        att          = torch.softmax(att_logits, dim=1)        # weights over time
+        frame_logits = self.fc_cla(x)                          # (B, T, n_classes), raw
+        # Attention-weighted average of LOGITS (not sigmoid'd probs).
+        # This gives clip_logits in a real-valued range, safe for BCEWithLogitsLoss.
+        clip_logits  = (att * frame_logits).sum(dim=1)         # (B, n_classes)
+        framewise    = torch.sigmoid(frame_logits)             # for inference / diagnostics
+        return clip_logits, framewise
 
 
 class BirdCNN(nn.Module):
@@ -314,7 +321,7 @@ def train_one_fold(fold_idx, train_rows, val_rows, fold_pred_path):
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS * len(tr_loader),
                                                        eta_min=LR_MIN)
     scaler = torch.cuda.amp.GradScaler()
-    bce_loss = nn.BCELoss()
+    bce_loss = nn.BCEWithLogitsLoss()
 
     best_val_auc = 0.0; best_state = None
     val_targets  = np.stack([r["target"] for r in val_rows])
@@ -329,13 +336,15 @@ def train_one_fold(fold_idx, train_rows, val_rows, fold_pred_path):
             if LABEL_SMOOTH > 0:
                 tgts_t = tgts_t * (1.0 - LABEL_SMOOTH) + LABEL_SMOOTH / N_CLASSES
 
+            # NaN guard on audio (corrupt OGG / mixup edge cases)
+            wavs_t = torch.nan_to_num(wavs_t, nan=0.0, posinf=0.0, neginf=0.0)
+
             opt.zero_grad()
             with torch.cuda.amp.autocast():
-                mel = wav_to_mel_3ch(wavs_t)                # (B, 3, n_mels, T)
-                clip, _ = model(mel)                         # sigmoided in SED head
-            # BCELoss is autocast-unsafe; compute it in fp32 outside autocast
-            clip = clip.float().clamp(min=1e-7, max=1.0 - 1e-7)
-            loss = bce_loss(clip, tgts_t.float())
+                mel       = wav_to_mel_3ch(wavs_t)             # (B, 3, n_mels, T)
+                clip_lg, _ = model(mel)                        # logits, autocast-safe
+                # BCEWithLogitsLoss is autocast-safe and NaN-resistant
+                loss = bce_loss(clip_lg, tgts_t)
             scaler.scale(loss).backward()
             scaler.step(opt); scaler.update(); sched.step()
             tr_loss += loss.item(); nb += 1
@@ -345,10 +354,12 @@ def train_one_fold(fold_idx, train_rows, val_rows, fold_pred_path):
         with torch.no_grad():
             for wavs_t, _ in va_loader:
                 wavs_t = wavs_t.to(DEVICE, non_blocking=True)
+                wavs_t = torch.nan_to_num(wavs_t, nan=0.0, posinf=0.0, neginf=0.0)
                 with torch.cuda.amp.autocast():
-                    mel = wav_to_mel_3ch(wavs_t)
-                    clip, _ = model(mel)
-                preds.append(clip.float().cpu().numpy())
+                    mel       = wav_to_mel_3ch(wavs_t)
+                    clip_lg, _ = model(mel)
+                # logits -> probs for AUC scoring
+                preds.append(torch.sigmoid(clip_lg).float().cpu().numpy())
         preds = np.concatenate(preds, axis=0)
         active = val_targets.sum(0) > 0
         try:
@@ -405,12 +416,14 @@ def infer_soundscape(path, models):
         absmax_normalize(wav[s * SR:(s + WINDOW_SEC) * SR]) for s in win_starts
     ]).astype(np.float32)
     chunk_t = torch.from_numpy(chunks).to(DEVICE)
+    chunk_t = torch.nan_to_num(chunk_t, nan=0.0, posinf=0.0, neginf=0.0)
     with torch.no_grad():
         with torch.cuda.amp.autocast():
             mel = wav_to_mel_3ch(chunk_t)
             preds_per_fold = []
             for m in models:
-                m.eval(); clip, _ = m(mel); preds_per_fold.append(clip.float().cpu().numpy())
+                m.eval(); clip_lg, _ = m(mel)
+                preds_per_fold.append(torch.sigmoid(clip_lg).float().cpu().numpy())
     win_preds = np.mean(preds_per_fold, axis=0)            # (9, N_CLASSES)
 
     # Map 9 x 20s window predictions back to 12 x 5s output slots via averaging

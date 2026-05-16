@@ -84,7 +84,7 @@ TOP_DB         = 80.0
 # Model / training config
 BACKBONE       = "tf_efficientnet_b0.ns_jft_in1k"
 N_FOLDS        = 5
-EPOCHS         = 20
+EPOCHS         = 20   # RUN 2: 3 folds x 20 ep x ~580s = 9.7h, fits in 12h budget
 BATCH_SZ       = 32
 LR_MAX         = 5e-4
 LR_MIN         = 1e-6
@@ -99,9 +99,9 @@ SEED           = 42
 #  At ~580s/epoch on T4, 5 folds x 20 epochs = ~16h -- needs 2 Kaggle runs.
 #  Run 1: FOLD_INDICES=[0,1], LOAD_PRIOR_FOLDS=False, DO_FINAL_INFERENCE=False
 #  Run 2: FOLD_INDICES=[2,3,4], LOAD_PRIOR_FOLDS=True,  DO_FINAL_INFERENCE=True
-FOLD_INDICES         = list(range(N_FOLDS))   # default: train all folds
-LOAD_PRIOR_FOLDS     = False                   # if True, mount prior kernel output
-DO_FINAL_INFERENCE   = True                    # if True, produce submission.csv
+FOLD_INDICES         = [2, 3, 4]   # RUN 2: train folds 2, 3, 4
+LOAD_PRIOR_FOLDS     = True         # mount run1 to get fold0/fold1 checkpoints
+DO_FINAL_INFERENCE   = True         # produce final 5-fold ensemble submission
 
 torch.manual_seed(SEED); np.random.seed(SEED); random.seed(SEED)
 

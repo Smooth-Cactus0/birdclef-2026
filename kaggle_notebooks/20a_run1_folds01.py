@@ -99,9 +99,9 @@ SEED           = 42
 #  At ~580s/epoch on T4, 5 folds x 20 epochs = ~16h -- needs 2 Kaggle runs.
 #  Run 1: FOLD_INDICES=[0,1], LOAD_PRIOR_FOLDS=False, DO_FINAL_INFERENCE=False
 #  Run 2: FOLD_INDICES=[2,3,4], LOAD_PRIOR_FOLDS=True,  DO_FINAL_INFERENCE=True
-FOLD_INDICES         = list(range(N_FOLDS))   # default: train all folds
-LOAD_PRIOR_FOLDS     = False                   # if True, mount prior kernel output
-DO_FINAL_INFERENCE   = True                    # if True, produce submission.csv
+FOLD_INDICES         = [0, 1]    # RUN 1: train folds 0 and 1
+LOAD_PRIOR_FOLDS     = False     # nothing to load yet
+DO_FINAL_INFERENCE   = False     # run 2 will produce the submission
 
 torch.manual_seed(SEED); np.random.seed(SEED); random.seed(SEED)
 

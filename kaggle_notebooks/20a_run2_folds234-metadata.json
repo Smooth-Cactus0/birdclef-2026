@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-cnn-sed-b0-run2",
+  "title": "BirdCLEF 2026 CNN SED B0 Run2",
+  "code_file": "20a_run2_folds234.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": ["alexycactus/birdclef-2026-cnn-sed-b0-run1"],
+  "model_sources": []
+}

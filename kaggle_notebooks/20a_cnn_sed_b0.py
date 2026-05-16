@@ -83,8 +83,8 @@ TOP_DB         = 80.0
 
 # Model / training config
 BACKBONE       = "tf_efficientnet_b0.ns_jft_in1k"
-N_FOLDS        = 5
-EPOCHS         = 25
+N_FOLDS        = 3   # was 5; reduced for time budget after 600s/epoch baseline
+EPOCHS         = 10  # was 25; reduced to fit in Kaggle 9h limit
 BATCH_SZ       = 32
 LR_MAX         = 5e-4
 LR_MIN         = 1e-6
@@ -92,7 +92,7 @@ WD             = 1e-4
 LABEL_SMOOTH   = 0.005
 MIXUP_P        = 0.5
 MIXUP_WEIGHT   = 0.5          # 1st place: Beta=inf -> constant 0.5 blend
-N_WORKERS      = 4
+N_WORKERS      = 8   # bumped from 4 to overlap OGG decode I/O with compute
 SEED           = 42
 
 torch.manual_seed(SEED); np.random.seed(SEED); random.seed(SEED)
@@ -218,15 +218,28 @@ mel_transform = torchaudio.transforms.MelSpectrogram(
 db_transform  = torchaudio.transforms.AmplitudeToDB(stype="power", top_db=TOP_DB).to(DEVICE)
 
 def wav_to_mel_3ch(wav_t):
-    """(B, T_samples) tensor -> (B, 3, N_MELS, T_frames) tensor on DEVICE."""
+    """(B, T_samples) tensor -> (B, 3, N_MELS, T_frames) tensor on DEVICE.
+
+    Always runs in fp32 inside an explicit `autocast(enabled=False)` block.
+    Without this guard, the n_fft=4096 FFT inside MelSpectrogram and the
+    log10 inside AmplitudeToDB overflow in fp16 and produce NaN, which then
+    propagates through BatchNorm running stats and poisons the whole model
+    from the first batch onward (nb20a v4 failure mode).
+    """
     if wav_t.device.type != DEVICE: wav_t = wav_t.to(DEVICE)
-    mel = mel_transform(wav_t)                         # (B, n_mels, T)
-    mel = db_transform(mel)
-    # 0-1 normalise per sample
-    mel_min = mel.amin(dim=(1, 2), keepdim=True)
-    mel_max = mel.amax(dim=(1, 2), keepdim=True)
-    mel     = (mel - mel_min) / (mel_max - mel_min + 1e-6)
-    return mel.unsqueeze(1).repeat(1, 3, 1, 1)         # (B, 3, n_mels, T)
+    with torch.cuda.amp.autocast(enabled=False):
+        wav_t = wav_t.float()
+        mel = mel_transform(wav_t)                          # (B, n_mels, T) fp32
+        mel = db_transform(mel)
+        # Defense: replace any -inf from log10(silence) before normalisation.
+        mel = torch.nan_to_num(mel, nan=-80.0, posinf=0.0, neginf=-80.0)
+        # 0-1 normalise per sample
+        mel_min = mel.amin(dim=(1, 2), keepdim=True)
+        mel_max = mel.amax(dim=(1, 2), keepdim=True)
+        mel     = (mel - mel_min) / (mel_max - mel_min + 1e-6)
+        # Final guard for degenerate mel_min == mel_max case
+        mel     = torch.nan_to_num(mel, nan=0.0, posinf=1.0, neginf=0.0)
+    return mel.unsqueeze(1).repeat(1, 3, 1, 1)              # (B, 3, n_mels, T)
 
 # %%
 # SED head -- attention pooling over time frames (Kong et al., 2020)
@@ -318,10 +331,12 @@ def train_one_fold(fold_idx, train_rows, val_rows, fold_pred_path):
     tr_loader = torch.utils.data.DataLoader(
         tr_ds, batch_size=BATCH_SZ, shuffle=True, num_workers=N_WORKERS,
         pin_memory=True, drop_last=True, persistent_workers=N_WORKERS > 0,
+        prefetch_factor=4 if N_WORKERS > 0 else None,
     )
     va_loader = torch.utils.data.DataLoader(
         va_ds, batch_size=BATCH_SZ, shuffle=False, num_workers=N_WORKERS,
         pin_memory=True, persistent_workers=N_WORKERS > 0,
+        prefetch_factor=4 if N_WORKERS > 0 else None,
     )
 
     model = BirdCNN().to(DEVICE)

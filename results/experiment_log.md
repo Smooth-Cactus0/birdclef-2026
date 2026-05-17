@@ -17,6 +17,7 @@
 | nb18a CNN EffNet-B0 (5s, BCE, no SED, no MixUp) | 0.852 | first CNN baseline |
 | nb19a nb17b + Top-K postproc (K=1) | **0.897** | +0.005 (new best) |
 | nb20a run1 (CNN B0 + SED, folds 0+1, 20ep) | OOF 0.9784 mean | first proper CNN, LB pending run 2 |
+| nb20a run2 (CNN B0 + SED, folds 2+3+4 + 5-fold ensemble inference) | OOF 0.9792 mean (5-fold) | LB pending submission |
 
 ## Key Lessons
 

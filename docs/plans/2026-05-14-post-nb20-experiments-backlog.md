@@ -33,6 +33,9 @@
 | nb19a | nb17b + top-K postproc (K=1) | **0.897** | +0.005 | **New best.** 2025 2nd-place trick generalises. Apply to every future submission. |
 | nb20a v1/v2 | EffNet-B0 + SED + 20s + MixUp | FAIL | n/a | v1: `BCELoss` autocast-unsafe; v2: NaN propagation through clamp tripping BCE assertion. Fixed in v3 (BCEWithLogitsLoss + NaN guard). |
 | nb20a v3 | Same recipe, BCEWithLogitsLoss + NaN guard | TBD | TBD | Pushed 2026-05-14 |
+| nb20a v4-v5 | All-NaN training (mel autocast overflow) → fixed with `autocast(enabled=False)` for mel + nan_to_num defense | TBD | TBD | v5 verified clean on epoch 1 (val_auc 0.854); cancelled to switch to split-run |
+| nb20a run1 (folds 0+1) | Split-run pattern, 20 epochs | OOF 0.9784 | n/a | ~6.4h, clean training |
+| nb20a run2 (folds 2+3+4 + 5-fold ensemble) | Mounts run1 via kernel_sources | OOF 0.9792 mean | LB pending | ~9.7h, submission.csv produced |
 
 **Locked-in lessons:**
 1. **OOF on 792 windows is unreliable.** Trust LB. Any spread < 0.01 between variants is noise.
@@ -363,9 +366,10 @@ Permanently dead (do not revisit unless mechanism changes):
 
 ---
 
-## Currently running (snapshot at 2026-05-14, late session)
+## Currently running (snapshot at 2026-05-17)
 
 | Kernel | Slug | Status |
 |---|---|---|
-| nb19a | `birdclef-2026-topk-postproc` | ✅ **DONE — LB 0.897** |
-| nb20a v3 | `birdclef-2026-cnn-sed-b0` | Pushed after v1/v2 errors. NaN guard + BCEWithLogitsLoss. ~3h remaining. |
+| nb19a | `birdclef-2026-topk-postproc` | ✅ DONE — LB 0.897 |
+| nb20a run1 | `birdclef-2026-cnn-sed-b0-run1` | ✅ DONE — folds 0+1 OOF mean 0.9784 |
+| nb20a run2 | `birdclef-2026-cnn-sed-b0-run2` | ✅ DONE — full 5-fold OOF 0.9792; submission.csv ready (LB pending submit) |

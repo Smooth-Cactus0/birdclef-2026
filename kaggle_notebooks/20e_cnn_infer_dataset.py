@@ -1,27 +1,23 @@
 # %%
 # ============================================================================
-# BirdCLEF 2026 -- nb20d: SAFE inference for nb20a 5-fold CNN ensemble
+# BirdCLEF 2026 -- nb20e: dataset-sourced inference for 5-fold CNN ensemble
 # ============================================================================
-# nb20b and nb20c both failed when submitted for scoring with the same
-# "Notebook Timeout" error -- but nb20c failed FAST, well under the 90 min
-# budget, which rules out time-budget as the actual cause. Meanwhile nb19a
-# (CPU-only Perch+MLP) scored fine.
+# nb20b/c/d all failed on submission scoring with "Notebook Timeout".
+# nb20d disproved the fp16/timm-tag hypotheses (it ran clean on staging
+# at 5.2s but still failed scoring). The remaining structural difference
+# vs nb19a (which scores fine) is that nb20b/c/d use kernel_sources to
+# mount fold checkpoints from prior training kernels.
 #
-# Two known risk factors in nb20c that we eliminate here:
+# Hypothesis tested by nb20e: the scoring environment does not support
+# kernel_sources the same way regular runs do. The standard 2024/2025
+# winners' topology is train kernel -> publish as Dataset -> inference
+# kernel mounts the Dataset.
 #
-# 1) timm model tag "tf_efficientnet_b0.ns_jft_in1k" can trigger a
-#    HuggingFace Hub lookup on construction even with pretrained=False.
-#    With internet OFF on the scoring box this would fail fast. Switched
-#    to plain architecture name "tf_efficientnet_b0_ns" bundled with timm.
+# nb20e copies nb20d byte-for-byte EXCEPT the metadata: dataset_sources
+# = ["alexycactus/birdclef-2026-cnn-fold-checkpoints"] replaces the two
+# kernel_sources entries.
 #
-# 2) m.half() and fp16 inference may crash on CPU for certain conv kernels.
-#    Removed all .half() calls. Pure fp32, device-agnostic.
-#
-# Other changes:
-#   * Detailed startup diagnostic prints (env, cwd, files seen) so a
-#     submission post-mortem has data.
-#   * torch.set_num_threads() set to all available cores for CPU inference.
-#   * Kept pipelined audio loading and Top-K postproc from nb20c.
+# Same fp32 inference, same Top-K postproc, same diagnostic preamble.
 #
 # Internet : OFF
 # GPU      : ON  (used if available, falls back to CPU cleanly)
@@ -339,7 +335,7 @@ print(f"Submission saved: {sub.shape}")
 
 # %%
 diagnostics = {
-    "notebook":     "nb20d_infer_safe",
+    "notebook":     "nb20e_infer_dataset",
     "model":        f"{BACKBONE} + SED head, fp32 inference",
     "device":        DEVICE,
     "ensemble_size": len(ensemble_models),
@@ -349,7 +345,7 @@ diagnostics = {
     "n_test_files":        len(test_files),
     "inference_time_s":    round(time.time() - t0, 1),
 }
-with open(OUT_DIR / "diagnostics_nb20d.json", "w") as f:
+with open(OUT_DIR / "diagnostics_nb20e.json", "w") as f:
     json.dump(diagnostics, f, indent=2)
-print("Saved diagnostics_nb20d.json")
+print("Saved diagnostics_nb20e.json")
 print(sub.head(3))

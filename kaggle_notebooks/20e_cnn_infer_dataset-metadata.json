@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-cnn-infer-dataset",
+  "title": "BirdCLEF 2026 CNN Infer Dataset",
+  "code_file": "20e_cnn_infer_dataset.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "dataset_sources": ["alexycactus/birdclef-2026-cnn-fold-checkpoints"],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [],
+  "model_sources": []
+}

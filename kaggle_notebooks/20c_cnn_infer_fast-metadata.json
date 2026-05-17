@@ -1,0 +1,17 @@
+{
+  "id": "alexycactus/birdclef-2026-cnn-infer-fast",
+  "title": "BirdCLEF 2026 CNN Infer Fast",
+  "code_file": "20c_cnn_infer_fast.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "dataset_sources": [],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [
+    "alexycactus/birdclef-2026-cnn-sed-b0-run1",
+    "alexycactus/birdclef-2026-cnn-sed-b0-run2"
+  ],
+  "model_sources": []
+}

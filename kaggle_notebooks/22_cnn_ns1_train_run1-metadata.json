@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-cnn-ns1-train-run1",
+  "title": "BirdCLEF 2026 CNN NS1 Train Run1",
+  "code_file": "22_cnn_ns1_train_run1.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": ["alexycactus/birdclef-2026-cnn-pl-saver"],
+  "model_sources": []
+}

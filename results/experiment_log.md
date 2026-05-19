@@ -18,6 +18,8 @@
 | nb19a nb17b + Top-K postproc (K=1) | **0.897** | +0.005 (new best) |
 | nb20a run1 (CNN B0 + SED, folds 0+1, 20ep) | OOF 0.9784 mean | first proper CNN, LB pending run 2 |
 | nb20a run2 (CNN B0 + SED, folds 2+3+4 + 5-fold ensemble inference) | OOF 0.9792 mean (5-fold) | LB pending submission |
+| nb20e CNN 5-fold + top-K postproc (CPU, dataset_sources) | n/a (inference only) | **0.898** (new best, +0.001) |
+| nb21 Perch+MLP × CNN ensemble (W_CNN=0.5, top-K postproc) | n/a (inference only) | **0.922** (new best, +0.024 over nb20e -- much bigger jump than projected; the two models are highly complementary) |
 
 ## Key Lessons
 

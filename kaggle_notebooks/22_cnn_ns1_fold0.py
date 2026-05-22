@@ -1,6 +1,6 @@
 # %%
 # ============================================================================
-# BirdCLEF 2026 -- nb22 NS round 1 TRAINER  (run 1 = folds 0 + 1)
+# BirdCLEF 2026 -- nb22 NS round 1 TRAINER  (single fold 0)
 # ============================================================================
 # Noisy Student round 1 on top of nb20a's supervised CNN baseline (LB 0.898).
 # Recipe verbatim from 1st place 2025 + 2nd place 2025 trim:
@@ -105,7 +105,7 @@ NS_DROP_PATH     = 0.15       # stochastic depth -- the NS noise injector
 #  At ~580s/epoch on T4, 5 folds x 20 epochs = ~16h -- needs 2 Kaggle runs.
 #  Run 1: FOLD_INDICES=[0,1], LOAD_PRIOR_FOLDS=False, DO_FINAL_INFERENCE=False
 #  Run 2: FOLD_INDICES=[2,3,4], LOAD_PRIOR_FOLDS=True,  DO_FINAL_INFERENCE=True
-FOLD_INDICES         = [0, 1]    # RUN 1: train folds 0 and 1
+FOLD_INDICES         = [0]    # single-fold run for fold 0
 LOAD_PRIOR_FOLDS     = False     # nothing to load yet
 DO_FINAL_INFERENCE   = False     # run 2 will produce the submission
 

@@ -1,14 +1,14 @@
 {
-  "id": "alexycactus/birdclef-2026-cnn-ns1-f2-v2",
-  "title": "BirdCLEF 2026 CNN NS1 F2 v2",
-  "code_file": "22_cnn_ns1_fold2.py",
+  "id": "alexycactus/birdclef-2026-cnn-ns2-fold0",
+  "title": "BirdCLEF 2026 CNN NS2 Fold0",
+  "code_file": "23_cnn_ns2_fold0.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": false,
   "enable_gpu": true,
   "enable_internet": true,
   "dataset_sources": [
-    "alexycactus/birdclef-2026-cnn-pl-preds"
+    "alexycactus/birdclef-2026-cnn-pl-preds-r2"
   ],
   "competition_sources": [
     "birdclef-2026"

@@ -1,0 +1,16 @@
+{
+  "id": "alexycactus/diag-nb22e-cnn",
+  "title": "Diag nb22e CNN",
+  "code_file": "diag_nb22e_cnn.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": false,
+  "dataset_sources": [
+    "alexycactus/birdclef-2026-cnn-ns1-checkpoints"
+  ],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [],
+  "model_sources": []
+}

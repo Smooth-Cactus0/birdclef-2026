@@ -1,7 +1,15 @@
 # %%
 # ============================================================================
-# BirdCLEF 2026 -- nb19a: nb17b + Top-K post-processing
+# BirdCLEF 2026 -- nb22e: NS round 1 ensemble
 # ============================================================================
+# Identical pipeline to nb21 (LB 0.922) but swaps the 5 supervised CNN
+# checkpoints for 5 Noisy Student round-1 checkpoints (mean OOF 0.9745).
+# All other knobs frozen: W_CNN=0.5, alpha=0.6, top-K postproc K=1.
+# Clean A/B test: any LB delta isolates the NS round-1 contribution.
+#
+# (Header below preserved from nb19a/nb21 for code provenance.)
+#
+# Original nb19a header:
 # Identical pipeline to nb17b (alpha=0.6, LB 0.892) but applies the
 # 2nd-place-2025 top-K post-processing trick to the final predictions:
 #
@@ -128,12 +136,9 @@ LR         = 1e-3
 WD         = 1e-4
 BATCH_SZ   = 128
 ALPHA      = 0.6     # nb17b champion blend weight (Perch+MLP internal)
-TOP_K      = 2       # nb25 tweak: 2nd-place 2025 reported K=2 slightly better than K=1
+TOP_K      = 1       # 2nd-place top-K post-processing (1 = per-file max-prob multiplier)
 W_CNN      = 0.5     # nb21 ensemble blend: final = W_CNN*CNN + (1-W_CNN)*Perch+MLP
 CNN_BACKBONE = "tf_efficientnet_b0_ns"   # for diagnostics record (re-asserted in CNN block)
-# nb25 framewise smoothing kernel applied per-file across the 12 time slots
-# before top-K postprocessing. 1st-place-2025 reported +0.002 LB from this.
-SMOOTH_KERNEL = [0.1, 0.2, 0.4, 0.2, 0.1]
 
 FNAME_RE = re.compile(r"BC2026_(?:Train|Test)_(\d+)_(S\d+)_(\d{8})_(\d{6})\.ogg")
 def parse_fname(name):
@@ -488,7 +493,7 @@ print(f"\nPer-class AUC — top 20 (active={len(auc_df)}):")
 print(auc_df.head(20).to_string(index=False))
 print(f"\nBottom 10:")
 print(auc_df.tail(10).to_string(index=False))
-auc_df.to_csv(OUT_DIR / "per_class_auc_nb25.csv", index=False)
+auc_df.to_csv(OUT_DIR / "per_class_auc_nb21.csv", index=False)
 
 # %%
 # -- Diagnostic 2: Global summary + JSON --------------------------------------
@@ -503,8 +508,7 @@ print(f"OOF macro-AUC  logit on          : {auc_on_g:.4f}  ({auc_on_g-auc_off_g:
 print(f"{'='*60}")
 
 diagnostics = {
-    "notebook": "nb25", "model": "nb21-ensemble + topK=2 + framewise smoothing",
-    "smooth_kernel": SMOOTH_KERNEL,
+    "notebook": "nb21", "model": "ensemble-perch-mlp-x-cnn-topk",
     "w_cnn": W_CNN, "cnn_backbone": CNN_BACKBONE,
     "top_k": TOP_K, "base_alpha": ALPHA,
     "blend": True, "logit_mode": "per_class", "alpha": 0.6,
@@ -519,9 +523,9 @@ diagnostics = {
     "mlp_in_dim":        MLP_IN_DIM,
     "epochs":            EPOCHS,
 }
-with open(OUT_DIR / "diagnostics_nb25.json", "w") as f:
+with open(OUT_DIR / "diagnostics_nb21.json", "w") as f:
     json.dump(diagnostics, f, indent=2)
-print("Saved diagnostics_nb25.json")
+print("Saved diagnostics_nb21.json")
 
 # %%
 # -- Diagnostic 3: Prediction distributions -----------------------------------
@@ -544,8 +548,8 @@ for ax, sp in zip(axes.flatten(), top10 + bottom10):
     ax.set_title(f"{sp}\nAUC={av:.3f}  n_pos={int(Y_TR[:,ci].sum())}", fontsize=7)
     ax.legend(fontsize=6); ax.set_xlabel("pred", fontsize=6)
 plt.tight_layout()
-plt.savefig(OUT_DIR / "pred_dist_nb25.png", dpi=100, bbox_inches="tight")
-plt.close(); print("Saved pred_dist_nb25.png")
+plt.savefig(OUT_DIR / "pred_dist_nb21.png", dpi=100, bbox_inches="tight")
+plt.close(); print("Saved pred_dist_nb21.png")
 
 # %%
 del pca_tr, scores_tr, perch_sig_tr, temp_tr, logit_feat_tr, file_seq_np
@@ -614,11 +618,8 @@ print(f"Perch+MLP raw: {final.shape}  min={final.min():.4f}  max={final.max():.4
 # ============================================================================
 # nb21 ENSEMBLE BLOCK -- nb20 CNN 5-fold ensemble blended into Perch+MLP `final`
 # ============================================================================
-# Loads the 5 fold checkpoints via recursive glob `/kaggle/input/**/fold*_best.pth`,
-# so the script is dataset-agnostic: mount either
-# alexycactus/birdclef-2026-cnn-fold-checkpoints (supervised) or
-# alexycactus/birdclef-2026-cnn-ns1-checkpoints (NS round 1) in the kernel
-# metadata. Runs CNN inference on the
+# Loads the 5 fold checkpoints from the dataset_source
+# alexycactus/birdclef-2026-cnn-fold-checkpoints. Runs CNN inference on the
 # SAME test_files set used by Perch+MLP (rows align by index). Blends:
 #   final = W_CNN * cnn_pred + (1 - W_CNN) * (Perch+MLP raw)
 # then the existing top-K postproc fires on the blended `final` below.
@@ -811,40 +812,6 @@ print(f"\nEnsemble blend: final = {W_CNN}*CNN + {1.0 - W_CNN}*(Perch+MLP)")
 final = W_CNN * cnn_pred_flat + (1.0 - W_CNN) * final
 print(f"Blended:  min={final.min():.4f}  mean={final.mean():.4f}  max={final.max():.4f}")
 del _cnn_models, cnn_slot_pred; gc.collect()
-
-# %%
-# -- nb25 tweak: framewise smoothing (1st-place-2025) ------------------------
-# Smooths predictions across the 12 time-slots within each file with a
-# center-weighted 5-tap kernel. Birds typically vocalise across multiple
-# adjacent 5s windows, so smoothing fills in low-confidence gaps and
-# stabilises predictions near event boundaries. Reported gain: +0.002 LB.
-# Edge handling: clamped (replicate edge values), so the kernel still sums
-# to 1.0 at the boundaries.
-def framewise_smooth(preds_2d, meta_df, kernel):
-    kernel = np.asarray(kernel, dtype=np.float32)
-    khalf  = len(kernel) // 2
-    out    = preds_2d.copy()
-    file_ids = meta_df["filename"].to_numpy()
-    for f in np.unique(file_ids):
-        mask  = file_ids == f
-        block = preds_2d[mask]                              # (n_slots, n_classes)
-        n     = block.shape[0]
-        if n == 0:
-            continue
-        smoothed = np.zeros_like(block)
-        for s in range(n):
-            for ki, w in enumerate(kernel):
-                src = s + ki - khalf
-                src = max(0, min(n - 1, src))               # clamp at edges
-                smoothed[s] += w * block[src]
-        out[mask] = smoothed
-    return out
-
-print(f"\nFramewise smoothing with kernel {SMOOTH_KERNEL} ...")
-final_smooth = framewise_smooth(final, meta_te, SMOOTH_KERNEL)
-print(f"Pre-smooth :  mean={final.mean():.5f}  max={final.max():.5f}")
-print(f"Post-smooth:  mean={final_smooth.mean():.5f}  max={final_smooth.max():.5f}")
-final = final_smooth
 
 # %%
 # -- Top-K post-processing (2nd-place-2025 trick) ----------------------------

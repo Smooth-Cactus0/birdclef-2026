@@ -7,12 +7,12 @@
   "is_private": false,
   "enable_gpu": true,
   "enable_internet": true,
-  "dataset_sources": [],
+  "dataset_sources": [
+    "alexycactus/birdclef-2026-cnn-pl-preds"
+  ],
   "competition_sources": [
     "birdclef-2026"
   ],
-  "kernel_sources": [
-    "alexycactus/birdclef-2026-cnn-pl-saver"
-  ],
+  "kernel_sources": [],
   "model_sources": []
 }

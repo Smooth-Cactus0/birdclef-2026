@@ -1,0 +1,14 @@
+{
+  "id": "alexycactus/birdclef-2026-cnn-pl-saver-r2",
+  "title": "BirdCLEF 2026 CNN PL Saver R2",
+  "code_file": "23_cnn_pl_saver_r2.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "dataset_sources": ["alexycactus/birdclef-2026-cnn-ns1-checkpoints"],
+  "competition_sources": ["birdclef-2026"],
+  "kernel_sources": [],
+  "model_sources": []
+}
